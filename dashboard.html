@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Website Use Tracker Dashboard</title>
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>Website Use Tracker</h1>
+
+      <section class="controls">
+        <label for="period">Period</label>
+        <select id="period">
+          <option value="daily">Daily</option>
+          <option value="weekly">Weekly</option>
+          <option value="monthly">Monthly</option>
+        </select>
+      </section>
+
+      <section class="stats-grid">
+        <article class="card">
+          <h2>Total Time</h2>
+          <p id="total-time">0s</p>
+        </article>
+        <article class="card">
+          <h2>Unique Websites</h2>
+          <p id="unique-sites">0</p>
+        </article>
+        <article class="card">
+          <h2>Max Website Time</h2>
+          <p id="max-site">-</p>
+        </article>
+      </section>
+
+      <section class="top-sites">
+        <h2>Top 10 Websites</h2>
+        <ol id="top-sites-list"></ol>
+      </section>
+
+      <section class="actions">
+        <button id="clear-period">Clear Selected Period</button>
+        <button id="clear-all" class="danger">Clear All Data</button>
+      </section>
+
+      <p id="status" class="status"></p>
+    </main>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Website Use Tracker",
+  "version": "1.0.0",
+  "description": "Track website usage time and view top 10 sites by day, week, or month.",
+  "permissions": [
+    "tabs",
+    "storage",
+    "alarms",
+    "idle"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Website Use Tracker",
+    "default_popup": "popup.html"
+  }
+}

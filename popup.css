@@ -1,0 +1,35 @@
+:root {
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: #1f2937;
+}
+
+body {
+  margin: 0;
+  min-width: 290px;
+  background: #f8fafc;
+}
+
+.status-app {
+  padding: 14px;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+p {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+}
+
+button {
+  margin-top: 6px;
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fff;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
