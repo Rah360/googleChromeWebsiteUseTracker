@@ -10,6 +10,9 @@ Tracks active website usage time in Chrome and stores sessions in IndexedDB.
   - Daily
   - Weekly (Monday-start)
   - Monthly
+- Alerts:
+  - Daily website alerts at 1 hour and 3 hours (per website, once each threshold per day).
+  - Weekly website alert at 5 hours (per website, once per week).
 - Shows:
   - Total tracked time
   - Number of unique websites used
