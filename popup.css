@@ -23,6 +23,14 @@ p {
   font-size: 0.85rem;
 }
 
+.study-mode {
+  margin: 12px 0;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
 button {
   margin-top: 6px;
   width: 100%;
@@ -32,4 +40,10 @@ button {
   background: #fff;
   font-size: 0.85rem;
   cursor: pointer;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
 }

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Thought Pause Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="options-app">
+      <h1>Thought Pause Settings</h1>
+
+      <section class="card">
+        <label><input id="enabled" type="checkbox" /> Enable Thought Pause</label>
+        <label><input id="strict-mode" type="checkbox" /> Strict mode</label>
+        <label><input id="allow-note" type="checkbox" /> Allow one-line note</label>
+      </section>
+
+      <section class="card">
+        <h2>Target Sites</h2>
+        <label><input id="target-all" name="target-mode" type="radio" value="all_tracked" /> All tracked sites</label>
+        <label><input id="target-list" name="target-mode" type="radio" value="pause_list" /> Only pause list domains</label>
+        <label for="domains">Pause list (comma/newline separated)</label>
+        <textarea id="domains" rows="4"></textarea>
+      </section>
+
+      <section class="card">
+        <h2>Triggers</h2>
+        <label><input id="trigger-first-visit" type="checkbox" /> Prompt on each new site visit</label>
+        <label><input id="trigger-continuous" type="checkbox" /> Continuous usage trigger</label>
+        <label><input id="trigger-rapid" type="checkbox" /> Rapid switching trigger</label>
+        <label><input id="trigger-threshold" type="checkbox" /> Threshold trigger (1h/3h/5h weekly)</label>
+      </section>
+
+      <section class="card grid">
+        <label>Continuous minutes <input id="continuous-minutes" type="number" min="1" /></label>
+        <label>Global cooldown minutes <input id="cooldown-minutes" type="number" min="1" /></label>
+        <label>Auto-dismiss seconds (non-strict) <input id="auto-dismiss" type="number" min="3" /></label>
+        <label>Rapid switch tab count <input id="rapid-threshold" type="number" min="2" /></label>
+        <label>Rapid switch window (seconds) <input id="rapid-window" type="number" min="10" /></label>
+        <label>Rapid switch cooldown (minutes) <input id="rapid-cooldown" type="number" min="1" /></label>
+      </section>
+
+      <section class="card grid">
+        <h2>Quiet Hours</h2>
+        <label><input id="quiet-enabled" type="checkbox" /> Enable quiet hours</label>
+        <label>Start hour (0-23) <input id="quiet-start" type="number" min="0" max="23" /></label>
+        <label>End hour (0-23) <input id="quiet-end" type="number" min="0" max="23" /></label>
+      </section>
+
+      <section class="card">
+        <label for="quick-choices">Quick choices (one per line)</label>
+        <textarea id="quick-choices" rows="6"></textarea>
+      </section>
+
+      <section class="card grid">
+        <h2>Revisit Loop Detector</h2>
+        <label><input id="loop-enabled" type="checkbox" /> Enable loop detector</label>
+        <label>Window minutes <input id="loop-window-minutes" type="number" min="1" /></label>
+        <label>Min switches <input id="loop-min-switches" type="number" min="2" /></label>
+        <label>Max unique domains <input id="loop-max-domains" type="number" min="2" max="6" /></label>
+        <label>Cooldown minutes <input id="loop-cooldown-minutes" type="number" min="1" /></label>
+      </section>
+
+      <section class="actions">
+        <button id="save">Save Settings</button>
+        <button id="reset" type="button">Reset to Defaults</button>
+        <p id="status"></p>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

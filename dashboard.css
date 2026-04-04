@@ -25,6 +25,11 @@ h2 {
   font-size: 0.9rem;
 }
 
+h3 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 .controls {
   display: flex;
   align-items: center;
@@ -68,6 +73,49 @@ button {
   padding: 10px;
 }
 
+.chart-help {
+  margin: 6px 0 8px;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.thought-pause {
+  margin-top: 12px;
+}
+
+.study-mode-panel {
+  margin-top: 12px;
+}
+
+.behavioral {
+  margin-top: 12px;
+}
+
+.behavioral-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.behavioral-controls input {
+  width: 90px;
+}
+
+.thought-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.thought-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
 #top-sites-list {
   margin: 8px 0 0;
   padding-left: 20px;
@@ -78,6 +126,123 @@ button {
 #top-sites-list li {
   margin-bottom: 6px;
   font-size: 0.85rem;
+}
+
+#tp-top-sites,
+#tp-choices {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.tp-table {
+  width: 100%;
+  margin-top: 8px;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.tp-table th,
+.tp-table td {
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  padding: 6px 4px;
+}
+
+.highlight-row {
+  background: #fff7ed;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 180px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.bar-group {
+  margin-top: 10px;
+}
+
+.bar-group h4 {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+}
+
+.stacked-bar {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+}
+
+.stacked-segment {
+  height: 14px;
+  border-radius: 4px;
+}
+
+.legend {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.75rem;
+}
+
+.legend-item {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.legend-color {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid #cbd5e1;
+}
+
+.hist-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+}
+
+.hist-bar {
+  height: 10px;
+  background: #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.hist-fill {
+  height: 100%;
+  background: #2563eb;
+}
+
+.heatmap-grid {
+  display: grid;
+  grid-template-columns: 140px repeat(24, 1fr);
+  gap: 2px;
+  margin-top: 8px;
+  font-size: 0.68rem;
+}
+
+.heatmap-cell {
+  min-height: 16px;
+  border-radius: 3px;
+  text-align: center;
+  padding-top: 2px;
+}
+
+.heatmap-label {
+  font-weight: 600;
+  text-align: left;
+  padding-left: 4px;
 }
 
 .actions {
@@ -105,4 +270,14 @@ button.danger {
   margin: 8px 0 0;
   font-size: 0.8rem;
   color: #0f766e;
+}
+
+@media (max-width: 800px) {
+  .thought-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .thought-grid {
+    grid-template-columns: 1fr;
+  }
 }

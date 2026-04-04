@@ -39,6 +39,193 @@
         <ol id="top-sites-list"></ol>
       </section>
 
+      <section class="study-mode-panel">
+        <h2>Study Mode</h2>
+        <p class="chart-help">
+          Manual focus sessions. This tracks active-tab time while Study Mode is on, plus which sites you visited during that session.
+        </p>
+        <div class="thought-cards">
+          <article class="card">
+            <h3>Status</h3>
+            <p id="study-status-card">Off</p>
+          </article>
+          <article class="card">
+            <h3>Study Time</h3>
+            <p id="study-total-time">0s</p>
+          </article>
+          <article class="card">
+            <h3>Sessions</h3>
+            <p id="study-session-count">0</p>
+          </article>
+          <article class="card">
+            <h3>Distracting Time</h3>
+            <p id="study-distracting-time">0s</p>
+          </article>
+          <article class="card">
+            <h3>Focus Ratio</h3>
+            <p id="study-focus-ratio">0%</p>
+          </article>
+          <article class="card">
+            <h3>Switches During Study</h3>
+            <p id="study-switch-count">0</p>
+          </article>
+        </div>
+        <div class="thought-grid">
+          <article class="top-sites">
+            <h3>Top Study Sites</h3>
+            <ol id="study-top-sites"></ol>
+          </article>
+          <article class="top-sites">
+            <h3>Top Distracting Sites</h3>
+            <ol id="study-distractions"></ol>
+          </article>
+        </div>
+        <article class="top-sites">
+          <h3>Recent Study Sessions</h3>
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Study Time</th>
+                <th>Sites</th>
+                <th>Distracting Time</th>
+              </tr>
+            </thead>
+            <tbody id="study-recent-sessions"></tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="thought-pause">
+        <h2>Thought Pause Analytics</h2>
+        <div class="thought-cards">
+          <article class="card">
+            <h3>Today</h3>
+            <p id="tp-today">0</p>
+          </article>
+          <article class="card">
+            <h3>This Week</h3>
+            <p id="tp-week">0</p>
+          </article>
+          <article class="card">
+            <h3>Selected Period</h3>
+            <p id="tp-period-total">0</p>
+          </article>
+        </div>
+        <div class="thought-grid">
+          <article class="top-sites">
+            <h3>Top Pause Trigger Sites</h3>
+            <ol id="tp-top-sites"></ol>
+          </article>
+          <article class="top-sites">
+            <h3>Most Common Choices</h3>
+            <ol id="tp-choices"></ol>
+          </article>
+        </div>
+        <article class="top-sites">
+          <h3>Time Spent vs Pauses</h3>
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Time Spent</th>
+                <th>Pauses</th>
+              </tr>
+            </thead>
+            <tbody id="tp-correlation"></tbody>
+          </table>
+        </article>
+      </section>
+
+      <section class="behavioral">
+        <h2>Behavioral Analytics</h2>
+        <div class="behavioral-controls">
+          <label for="bounce-threshold">Bounce highlight threshold</label>
+          <input id="bounce-threshold" type="number" min="1" value="5" />
+        </div>
+
+        <article class="top-sites">
+          <h3>Revisit Speed (Top 3 domains)</h3>
+          <p class="chart-help">
+            Shows how quickly you came back to the same site. Darker color means more revisits in that time bucket.
+          </p>
+          <div id="revisit-bars"></div>
+        </article>
+
+        <article class="top-sites">
+          <h3>Bounce Pairs (Top 10)</h3>
+          <p class="chart-help">
+            Pair = previous site to next site. Highlighted rows mean repeated fast ping-pong switching.
+          </p>
+          <table class="tp-table">
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th>Count</th>
+                <th>Avg Interval</th>
+              </tr>
+            </thead>
+            <tbody id="bounce-pairs"></tbody>
+          </table>
+        </article>
+
+        <article class="top-sites">
+          <h3>Switching Rate (10-minute buckets)</h3>
+          <p class="chart-help">
+            Line shows number of active-tab switches in each 10-minute window across the day.
+          </p>
+          <svg id="switching-timeline" class="chart-svg" viewBox="0 0 600 180" preserveAspectRatio="none"></svg>
+          <div id="switching-legend" class="legend"></div>
+        </article>
+
+        <article class="top-sites">
+          <h3>Rapid Loops</h3>
+          <p class="chart-help">
+            A loop is repeated switching among 2-3 domains with under 60s gap between switches.
+          </p>
+          <div class="thought-cards">
+            <article class="card">
+              <h3>Longest Loop</h3>
+              <p id="loop-max">0</p>
+            </article>
+            <article class="card">
+              <h3>Average Loop Length</h3>
+              <p id="loop-avg">0</p>
+            </article>
+            <article class="card">
+              <h3>Total Loops</h3>
+              <p id="loop-count">0</p>
+            </article>
+          </div>
+          <div id="loop-histogram"></div>
+          <p class="chart-help">Histogram: X is loop length, Y is number of such loops.</p>
+        </article>
+
+        <article class="top-sites">
+          <h3>Activity Heatmap (Top 5 domains by hour)</h3>
+          <p class="chart-help">
+            Rows are domains, columns are hours (0-23), and darker cells mean more tab activations in that hour.
+          </p>
+          <div id="activity-heatmap"></div>
+          <div id="heatmap-legend" class="legend"></div>
+        </article>
+      </section>
+
+      <section class="top-sites">
+        <h2>Loop Prompts</h2>
+        <div class="thought-cards">
+          <article class="card">
+            <h3>Loop prompts today</h3>
+            <p id="loop-prompts-today">0</p>
+          </article>
+          <article class="card">
+            <h3>Most selected action</h3>
+            <p id="loop-action">-</p>
+          </article>
+        </div>
+        <h3>Most common loop domains (7d)</h3>
+        <ol id="loop-domains"></ol>
+      </section>
+
       <section class="actions">
         <button id="clear-period">Clear Selected Period</button>
         <button id="clear-all" class="danger">Clear All Data</button>
