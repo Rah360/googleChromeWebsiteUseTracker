@@ -31,6 +31,13 @@ p {
   background: #ffffff;
 }
 
+.hint {
+  margin-top: 8px;
+  color: #475569;
+  min-height: 16px;
+  font-size: 0.76rem;
+}
+
 button {
   margin-top: 6px;
   width: 100%;

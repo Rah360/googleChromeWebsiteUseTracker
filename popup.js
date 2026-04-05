@@ -3,8 +3,11 @@ const activeDomainEl = document.getElementById("active-domain");
 const studyStatusEl = document.getElementById("study-status");
 const studyMetaEl = document.getElementById("study-meta");
 const toggleStudyModeBtn = document.getElementById("toggle-study-mode");
+const markDistractingBtn = document.getElementById("mark-distracting");
+const markDistractingStatusEl = document.getElementById("mark-distracting-status");
 const openDashboardBtn = document.getElementById("open-dashboard");
 const openSettingsBtn = document.getElementById("open-settings");
+let currentActiveTab = { domain: null, url: null };
 
 function sendMessage(message) {
   return new Promise((resolve, reject) => {
@@ -56,16 +59,26 @@ function renderStudyMode(studyMode) {
   toggleStudyModeBtn.dataset.mode = "stop";
 }
 
+function setMarkDistractingStatus(message, isError = false) {
+  markDistractingStatusEl.textContent = message;
+  markDistractingStatusEl.style.color = isError ? "#b91c1c" : "#475569";
+}
+
 async function loadStatus() {
   try {
     const data = await sendMessage({ type: "GET_TRACKING_STATUS" });
     trackingStatusEl.textContent = data.tracking ? "Tracking is active." : "Tracking is paused.";
     activeDomainEl.textContent = `Current site: ${data.domain || "-"}`;
+    currentActiveTab = data.activeTab || { domain: null, url: null };
     renderStudyMode(data.studyMode);
+    markDistractingBtn.disabled = !currentActiveTab.domain;
+    setMarkDistractingStatus("");
   } catch {
     trackingStatusEl.textContent = "Tracking status unavailable.";
     activeDomainEl.textContent = "Current site: -";
     renderStudyMode({ active: false });
+    currentActiveTab = { domain: null, url: null };
+    markDistractingBtn.disabled = true;
   }
 }
 
@@ -87,6 +100,28 @@ toggleStudyModeBtn.addEventListener("click", async () => {
     await loadStatus();
   } catch {
     studyStatusEl.textContent = "Study mode update failed.";
+  }
+});
+
+markDistractingBtn.addEventListener("click", async () => {
+  if (!currentActiveTab.domain) {
+    setMarkDistractingStatus("No trackable site is active.", true);
+    return;
+  }
+
+  try {
+    const data = await sendMessage({ type: "MARK_CURRENT_SITE_DISTRACTING" });
+    if (data.alreadyMarked) {
+      setMarkDistractingStatus(`${data.domain} is already marked as distracting.`);
+      return;
+    }
+    if (data.pattern) {
+      setMarkDistractingStatus(`Saved ${data.domain} and pattern ${data.pattern}`);
+      return;
+    }
+    setMarkDistractingStatus(`Saved ${data.domain} as distracting.`);
+  } catch (error) {
+    setMarkDistractingStatus(error.message || "Unable to save.", true);
   }
 });
 

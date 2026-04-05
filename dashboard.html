@@ -19,6 +19,35 @@
         </select>
       </section>
 
+      <section class="system-health">
+        <div class="health-summary">
+          <article class="card">
+            <h2>System Health</h2>
+            <div class="health-grid">
+              <div>
+                <span class="metric-label">Uptime</span>
+                <p id="health-uptime">0s</p>
+              </div>
+              <div>
+                <span class="metric-label">Crashes</span>
+                <p id="health-crashes">0</p>
+              </div>
+              <div>
+                <span class="metric-label">Jitter</span>
+                <p id="health-jitter">0</p>
+              </div>
+            </div>
+          </article>
+        </div>
+        <article class="card feline-panel">
+          <div id="feline-visual" class="feline-visual"></div>
+          <div class="feline-copy">
+            <h2 id="feline-title">System Stable</h2>
+            <p id="feline-text">Awaiting focus data.</p>
+          </div>
+        </article>
+      </section>
+
       <section class="stats-grid">
         <article class="card">
           <h2>Total Time</h2>
@@ -37,6 +66,23 @@
       <section class="top-sites">
         <h2>Top 10 Websites</h2>
         <ol id="top-sites-list"></ol>
+      </section>
+
+      <section class="top-sites">
+        <h2>Insights</h2>
+        <p class="chart-help">
+          Plain-language interpretation of your study, distraction, and switching patterns for the selected period.
+        </p>
+        <div id="insights-list" class="insights-list"></div>
+      </section>
+
+      <section class="top-sites">
+        <h2>Behavioral Mirror</h2>
+        <p class="chart-help">
+          A direct read on your last 24-hour browser behavior: loops, deep dives, time-of-day stability, and what the cat would change next.
+        </p>
+        <div id="behavioral-mirror" class="behavioral-mirror"></div>
+        <p id="cats-advice" class="cats-advice"></p>
       </section>
 
       <section class="study-mode-panel">
@@ -72,6 +118,18 @@
           <article class="card">
             <h3>Doomscroll Time</h3>
             <p id="study-doomscroll-time">0s</p>
+          </article>
+          <article class="card">
+            <h3>Focus Fragments</h3>
+            <p id="fragment-count">0</p>
+          </article>
+          <article class="card">
+            <h3>Deep Dives</h3>
+            <p id="deep-dive-count">0</p>
+          </article>
+          <article class="card">
+            <h3>Reactive Hour</h3>
+            <p id="reactive-hour">-</p>
           </article>
         </div>
         <div class="thought-grid">

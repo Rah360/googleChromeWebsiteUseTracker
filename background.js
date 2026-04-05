@@ -15,9 +15,11 @@ const LOOP_SETTINGS_KEY = "revisitLoopSettings";
 const LOOP_STATE_KEY = "revisitLoopState";
 const STUDY_MODE_KEY = "studyModeState";
 const STUDY_SETTINGS_KEY = "studyModeSettings";
+const ACTIVITY_STATE_KEY = "activityState";
 
 const HEARTBEAT_ALARM = "trackingHeartbeat";
 const RETENTION_ALARM = "retentionCleanup";
+const DAILY_REPORT_ALARM = "dailySystemReport";
 
 const HEARTBEAT_MINUTES = 1;
 const MAX_SESSION_MS = 10 * 60 * 1000;
@@ -31,6 +33,26 @@ const DAILY_SECOND_ALERT_MS = 3 * ONE_HOUR_MS;
 const WEEKLY_ALERT_MS = 5 * ONE_HOUR_MS;
 const RAPID_GAP_MS = 60 * 1000;
 const DEFAULT_LOOP_WINDOW_MS = 4 * 60 * 1000;
+const STUDY_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
+const LOOP_LOCKOUT_WINDOW_MS = 10 * 60 * 1000;
+const LOOP_LOCKOUT_THRESHOLD = 3;
+const DEEP_DIVE_MAX_MS = 15 * 60 * 1000;
+const COOLDOWN_PAGE_SECONDS = 60;
+const REPORT_HOUR = 9;
+const IDLE_DETECTION_SECONDS = 180;
+const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+const PRODUCTIVE_DOMAINS = [
+  "github.com",
+  "notion.so",
+  "gemini.google.com",
+  "leetcode.com",
+  "chatgpt.com",
+  "developer.mozilla.org",
+  "docs.docker.com",
+  "kubernetes.io",
+  "stackoverflow.com",
+  "cscsepic.blogspot.com",
+];
 const DEFAULT_DISTRACTION_DOMAINS = [
   "instagram.com",
   "reddit.com",
@@ -81,6 +103,31 @@ function cloneDefaultDistractionDomains() {
 }
 
 const loopSwitchQueue = [];
+const loopCount = [];
+const deepDiveTimers = new Map();
+const DEEP_DIVE_PATTERNS = [
+  "https://www.youtube.com/shorts/*",
+  "https://youtube.com/shorts/*",
+  "https://www.instagram.com/reels/*",
+  "https://instagram.com/reels/*",
+];
+const EDUCATIONAL_KEYWORDS = [
+  "java",
+  "spring boot",
+  "golang",
+  "scala",
+  "dsa",
+  "backend",
+  "system design",
+  "coding",
+  "tutorial",
+  "kubernetes",
+  "docker",
+  "leetcode",
+  "architecture",
+];
+const TITLE_ALLOW_KEYWORDS = ["tutorial", "coding", "system design", "engineering", "leetcode"];
+const TITLE_BLOCK_KEYWORDS = ["trailer", "music video", "gaming", "comedy"];
 const REQUIRED_DB_STORES = [
   SESSION_STORE,
   THOUGHT_PAUSE_STORE,
@@ -783,10 +830,13 @@ function clone(value) {
 function sanitizeThoughtPauseSettings(input) {
   const settings = clone(DEFAULT_THOUGHT_PAUSE_SETTINGS);
   if (!input || typeof input !== "object") {
+    settings.enabled = true;
+    settings.strictMode = true;
+    settings.quietHours.enabled = false;
     return settings;
   }
 
-  settings.enabled = input.enabled !== false;
+  settings.enabled = true;
   settings.targetMode = input.targetMode === "all_tracked" ? "all_tracked" : "pause_list";
   settings.domains = Array.isArray(input.domains)
     ? [...new Set(input.domains.map((item) => normalizeDomain(`https://${item}`) || normalizeDomain(item)).filter(Boolean))]
@@ -800,7 +850,7 @@ function sanitizeThoughtPauseSettings(input) {
   };
 
   settings.cooldownMinutes = Math.max(1, Number(input.cooldownMinutes) || settings.cooldownMinutes);
-  settings.strictMode = Boolean(input.strictMode);
+  settings.strictMode = true;
   settings.autoDismissSeconds = Math.max(3, Number(input.autoDismissSeconds) || settings.autoDismissSeconds);
   settings.allowNote = input.allowNote !== false;
 
@@ -830,10 +880,11 @@ function sanitizeThoughtPauseSettings(input) {
 function sanitizeLoopSettings(input) {
   const settings = clone(DEFAULT_LOOP_SETTINGS);
   if (!input || typeof input !== "object") {
+    settings.enabled = true;
     return settings;
   }
 
-  settings.enabled = input.enabled !== false;
+  settings.enabled = true;
   settings.windowMinutes = Math.max(1, Number(input.windowMinutes) || settings.windowMinutes);
   settings.minSwitches = Math.max(2, Number(input.minSwitches) || settings.minSwitches);
   settings.maxUniqueDomains = Math.max(2, Math.min(6, Number(input.maxUniqueDomains) || settings.maxUniqueDomains));
@@ -886,6 +937,30 @@ function sanitizeStudySettings(input) {
   return settings;
 }
 
+function inferDistractingPattern(url) {
+  if (!url) {
+    return null;
+  }
+
+  const normalizedUrl = String(url).toLowerCase();
+  const knownPatterns = [
+    "https://www.youtube.com/shorts/*",
+    "https://youtube.com/shorts/*",
+    "https://www.instagram.com/reel/*",
+    "https://instagram.com/reel/*",
+    "https://www.instagram.com/reels/*",
+    "https://instagram.com/reels/*",
+  ];
+
+  for (const pattern of knownPatterns) {
+    if (urlMatchesPattern(normalizedUrl, pattern)) {
+      return pattern;
+    }
+  }
+
+  return null;
+}
+
 async function getThoughtPauseSettings() {
   const data = await chrome.storage.local.get(THOUGHT_PAUSE_SETTINGS_KEY);
   return sanitizeThoughtPauseSettings(data[THOUGHT_PAUSE_SETTINGS_KEY]);
@@ -917,6 +992,51 @@ async function setStudySettings(settings) {
   const normalized = sanitizeStudySettings(settings);
   await chrome.storage.local.set({ [STUDY_SETTINGS_KEY]: normalized });
   return normalized;
+}
+
+async function addCurrentSiteToDistractingList(url) {
+  if (!isTrackableUrl(url)) {
+    throw new Error("Current page is not a trackable website.");
+  }
+
+  const domain = normalizeDomain(url);
+  if (!domain) {
+    throw new Error("Unable to determine current domain.");
+  }
+
+  const settings = await getStudySettings();
+  const nextDomains = new Set(settings.distractingDomains || []);
+  const alreadyHasDomain = nextDomains.has(domain);
+  nextDomains.add(domain);
+
+  const nextPatterns = new Set(settings.distractingUrlPatterns || []);
+  const inferredPattern = inferDistractingPattern(url);
+  const alreadyHasPattern = inferredPattern ? nextPatterns.has(inferredPattern) : false;
+  if (inferredPattern) {
+    nextPatterns.add(inferredPattern);
+  }
+
+  if (alreadyHasDomain && (!inferredPattern || alreadyHasPattern)) {
+    return {
+      domain,
+      pattern: inferredPattern,
+      alreadyMarked: true,
+      settings,
+    };
+  }
+
+  const updated = await setStudySettings({
+    ...settings,
+    distractingDomains: [...nextDomains],
+    distractingUrlPatterns: [...nextPatterns],
+  });
+
+  return {
+    domain,
+    pattern: inferredPattern,
+    alreadyMarked: false,
+    settings: updated,
+  };
 }
 
 async function getTabEventState() {
@@ -960,6 +1080,11 @@ function createEmptyStudyModeState(now = Date.now()) {
     totalSwitches: 0,
     siteStats: {},
     doomscrollBySurface: {},
+    deepDiveCount: 0,
+    deepDiveEpisodes: [],
+    currentDoomscrollBlock: null,
+    lastDistractionAlertAt: 0,
+    lastDistractionAlertUrl: null,
     lastUpdatedAt: now,
   };
 }
@@ -999,6 +1124,13 @@ function sortStudySites(siteStats) {
 
 function domainMatchesList(domain, domains) {
   return domains.some((item) => domain === item || domain.endsWith(`.${item}`));
+}
+
+function isProductiveDomain(domain) {
+  if (!domain) {
+    return false;
+  }
+  return domainMatchesList(domain, PRODUCTIVE_DOMAINS);
 }
 
 function getDoomscrollSurface(domain, url) {
@@ -1051,6 +1183,21 @@ async function getStudyModeState() {
     doomscrollBySurface: raw.doomscrollBySurface && typeof raw.doomscrollBySurface === "object"
       ? raw.doomscrollBySurface
       : {},
+    deepDiveCount: Math.max(0, Number(raw.deepDiveCount) || 0),
+    deepDiveEpisodes: Array.isArray(raw.deepDiveEpisodes)
+      ? raw.deepDiveEpisodes.filter((item) => item && Number.isFinite(item.durationMs))
+      : [],
+    currentDoomscrollBlock:
+      raw.currentDoomscrollBlock && typeof raw.currentDoomscrollBlock === "object"
+        ? {
+            label: typeof raw.currentDoomscrollBlock.label === "string" ? raw.currentDoomscrollBlock.label : null,
+            startedAt: Number.isFinite(raw.currentDoomscrollBlock.startedAt)
+              ? raw.currentDoomscrollBlock.startedAt
+              : null,
+          }
+        : null,
+    lastDistractionAlertAt: Math.max(0, Number(raw.lastDistractionAlertAt) || 0),
+    lastDistractionAlertUrl: typeof raw.lastDistractionAlertUrl === "string" ? raw.lastDistractionAlertUrl : null,
     lastUpdatedAt: Number.isFinite(raw.lastUpdatedAt) ? raw.lastUpdatedAt : Date.now(),
   };
 }
@@ -1063,9 +1210,102 @@ async function clearStudyModeState() {
   await chrome.storage.local.remove(STUDY_MODE_KEY);
 }
 
+function createDefaultActivityState() {
+  return {
+    chromeFocused: true,
+    idleState: "active",
+    waitingForInteraction: true,
+    lastHeartbeatAt: 0,
+    lastHeartbeatTabId: null,
+    lastHeartbeatWindowId: null,
+  };
+}
+
+async function getActivityState() {
+  const data = await chrome.storage.local.get(ACTIVITY_STATE_KEY);
+  const raw = data[ACTIVITY_STATE_KEY];
+  if (!raw || typeof raw !== "object") {
+    return createDefaultActivityState();
+  }
+
+  return {
+    chromeFocused: raw.chromeFocused !== false,
+    idleState: typeof raw.idleState === "string" ? raw.idleState : "active",
+    waitingForInteraction: raw.waitingForInteraction !== false,
+    lastHeartbeatAt: Math.max(0, Number(raw.lastHeartbeatAt) || 0),
+    lastHeartbeatTabId: Number.isInteger(raw.lastHeartbeatTabId) ? raw.lastHeartbeatTabId : null,
+    lastHeartbeatWindowId: Number.isInteger(raw.lastHeartbeatWindowId) ? raw.lastHeartbeatWindowId : null,
+  };
+}
+
+async function setActivityState(state) {
+  await chrome.storage.local.set({ [ACTIVITY_STATE_KEY]: state });
+}
+
+function isHeartbeatFresh(state, now = Date.now()) {
+  return Number(state?.lastHeartbeatAt) > 0 && now - Number(state.lastHeartbeatAt) <= HEARTBEAT_STALE_MS;
+}
+
+function canTrackActively(state, now = Date.now()) {
+  return (
+    Boolean(state?.chromeFocused) &&
+    state?.idleState === "active" &&
+    state?.waitingForInteraction === false &&
+    isHeartbeatFresh(state, now)
+  );
+}
+
+async function pauseActiveTracking(reason = "inactive") {
+  await commitActiveSession(reason);
+  await syncStudyMode(null, null, reason);
+  await clearStudyDistractionBadge();
+}
+
+async function requireFreshInteraction(reason = "inactive") {
+  const state = await getActivityState();
+  await setActivityState({
+    ...state,
+    waitingForInteraction: true,
+  });
+  await pauseActiveTracking(reason);
+}
+
+async function expireTrackingWithoutHeartbeat(now = Date.now()) {
+  const state = await getActivityState();
+  if (!state.chromeFocused || state.idleState !== "active") {
+    return false;
+  }
+  if (!state.lastHeartbeatAt || now - state.lastHeartbeatAt <= HEARTBEAT_STALE_MS) {
+    return false;
+  }
+
+  await setActivityState({
+    ...state,
+    waitingForInteraction: true,
+  });
+  await pauseActiveTracking("heartbeatTimeout");
+  return true;
+}
+
 async function getActiveSession() {
   const data = await chrome.storage.local.get(ACTIVE_SESSION_KEY);
   return data[ACTIVE_SESSION_KEY] || null;
+}
+
+async function markCurrentSessionProductive(metadata = {}) {
+  const active = await getActiveSession();
+  if (!active || !active.domain) {
+    return false;
+  }
+
+  await setActiveSession({
+    ...active,
+    productivityHint: "productive",
+    productivitySource: "youtube_metadata",
+    productivityTitle: typeof metadata.title === "string" ? metadata.title.slice(0, 200) : null,
+    productivityKeywords: Array.isArray(metadata.keywords) ? metadata.keywords.slice(0, 20) : [],
+  });
+  return true;
 }
 
 async function getAlertState() {
@@ -1130,23 +1370,7 @@ function getThoughtPauseWeeklyDomainState(state, weekKey, domain) {
 }
 
 function isInQuietHours(settings, nowMs) {
-  if (!settings.quietHours.enabled) {
-    return false;
-  }
-
-  const hour = new Date(nowMs).getHours();
-  const start = settings.quietHours.startHour;
-  const end = settings.quietHours.endHour;
-
-  if (start === end) {
-    return true;
-  }
-
-  if (start < end) {
-    return hour >= start && hour < end;
-  }
-
-  return hour >= start || hour < end;
+  return false;
 }
 
 function domainMatchesPauseTarget(settings, domain) {
@@ -1225,10 +1449,29 @@ function applyStudyChunkToState(state, studySettings = DEFAULT_STUDY_SETTINGS, n
     state.totalDistractingMs += durationMs;
   }
   if (classification.doomscrollSurface) {
+    if (
+      !state.currentDoomscrollBlock ||
+      state.currentDoomscrollBlock.label !== classification.doomscrollSurface
+    ) {
+      state.currentDoomscrollBlock = {
+        label: classification.doomscrollSurface,
+        startedAt: state.chunkStartTime,
+      };
+    }
     site.doomscrollMs += durationMs;
     state.totalDoomscrollMs += durationMs;
     state.doomscrollBySurface[classification.doomscrollSurface] =
       (state.doomscrollBySurface[classification.doomscrollSurface] || 0) + durationMs;
+  } else if (state.currentDoomscrollBlock?.startedAt) {
+    const blockDurationMs = Math.max(0, endTime - state.currentDoomscrollBlock.startedAt);
+    if (blockDurationMs >= DEEP_DIVE_MAX_MS) {
+      state.deepDiveCount += 1;
+      state.deepDiveEpisodes.push({
+        label: state.currentDoomscrollBlock.label,
+        durationMs: blockDurationMs,
+      });
+    }
+    state.currentDoomscrollBlock = null;
   }
 
   state.chunkStartTime = now;
@@ -1238,6 +1481,18 @@ function applyStudyChunkToState(state, studySettings = DEFAULT_STUDY_SETTINGS, n
 }
 
 function createStudySessionRecord(state, endTime = Date.now()) {
+  if (state.currentDoomscrollBlock?.startedAt) {
+    const blockDurationMs = Math.max(0, endTime - state.currentDoomscrollBlock.startedAt);
+    if (blockDurationMs >= DEEP_DIVE_MAX_MS) {
+      state.deepDiveCount += 1;
+      state.deepDiveEpisodes.push({
+        label: state.currentDoomscrollBlock.label,
+        durationMs: blockDurationMs,
+      });
+    }
+    state.currentDoomscrollBlock = null;
+  }
+
   const sites = sortStudySites(state.siteStats);
   const uniqueSites = sites.length;
   const distractingSites = sites.filter((site) => site.isDistracting);
@@ -1257,6 +1512,7 @@ function createStudySessionRecord(state, endTime = Date.now()) {
     focusRatio,
     uniqueSites,
     totalSwitches: state.totalSwitches || 0,
+    deepDiveCount: state.deepDiveCount || 0,
     sites,
     distractingSites,
     doomscrollSurfaces: Object.entries(state.doomscrollBySurface || {})
@@ -1266,6 +1522,7 @@ function createStudySessionRecord(state, endTime = Date.now()) {
         durationText: formatDuration(durationMs),
       }))
       .sort((a, b) => b.durationMs - a.durationMs),
+    deepDiveEpisodes: [...(state.deepDiveEpisodes || [])],
   };
 }
 
@@ -1329,6 +1586,7 @@ async function stopStudyMode() {
   }
 
   await clearStudyModeState();
+  await clearStudyDistractionBadge();
   analyticsCache.clear();
 
   return {
@@ -1373,8 +1631,14 @@ async function syncStudyMode(domain, url, reason = "sync") {
   }
 
   if (state.currentDomain === nextDomain) {
-    if (reason === "heartbeat") {
+    const currentClassification = classifyStudyVisit(state.currentDomain, state.currentUrl, studySettings);
+    const nextClassification = classifyStudyVisit(nextDomain, nextUrl, studySettings);
+    const changedMode =
+      currentClassification.doomscrollSurface !== nextClassification.doomscrollSurface;
+
+    if (reason === "heartbeat" || changedMode) {
       applyStudyChunkToState(state, studySettings, now);
+      state.currentUrl = nextUrl;
     } else {
       state.currentUrl = nextUrl;
       state.lastSeenTime = now;
@@ -1416,6 +1680,12 @@ async function commitActiveSession(reason = "switch") {
       endTime,
       durationMs,
       reason,
+      productivityHint: active.productivityHint || null,
+      productivitySource: active.productivitySource || null,
+      productivityTitle: active.productivityTitle || null,
+      productivityKeywords: Array.isArray(active.productivityKeywords)
+        ? active.productivityKeywords.slice(0, 20)
+        : [],
     });
   }
 
@@ -1439,6 +1709,12 @@ async function recoverActiveSessionOnStartup() {
       endTime,
       durationMs,
       reason: "recovered",
+      productivityHint: active.productivityHint || null,
+      productivitySource: active.productivitySource || null,
+      productivityTitle: active.productivityTitle || null,
+      productivityKeywords: Array.isArray(active.productivityKeywords)
+        ? active.productivityKeywords.slice(0, 20)
+        : [],
     });
   }
 
@@ -1561,19 +1837,269 @@ function getThoughtPauseReasonText(triggerType, domain) {
     return `You crossed 5 hours on ${domain} this week.`;
   }
 
+  if (triggerType === "youtube_non_educational") {
+    return `This YouTube video does not look educational based on its title and metadata.`;
+  }
+
+  if (triggerType === "youtube_blocked_title") {
+    return `This YouTube title looks entertainment-oriented rather than study-related.`;
+  }
+
   return "This is a short check-in to build awareness.";
+}
+
+function isIgnorableTabMessagingError(error) {
+  const message = String(error || "");
+  return (
+    message.includes("Could not establish connection") ||
+    message.includes("Receiving end does not exist") ||
+    message.includes("The message port closed before a response was received") ||
+    message.includes("Extension context invalidated")
+  );
+}
+
+async function swallowIgnorableAsync(task) {
+  try {
+    return await task();
+  } catch (error) {
+    if (isIgnorableTabMessagingError(error?.message || error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function ensureContentScriptInjected(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return false;
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab?.url || !isTrackableUrl(tab.url)) {
+    return false;
+  }
+
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: ["content.js"],
+  });
+  return true;
 }
 
 function sendMessageToTab(tabId, message) {
   return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(tabId, message, (response) => {
-      if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+    const attemptSend = () => {
+      chrome.tabs.sendMessage(tabId, message, async (response) => {
+        if (chrome.runtime.lastError) {
+          const errorMessage = chrome.runtime.lastError.message || "Unknown tab messaging error";
+          if (
+            errorMessage.includes("Could not establish connection") ||
+            errorMessage.includes("Receiving end does not exist")
+          ) {
+            try {
+              const injected = await ensureContentScriptInjected(tabId);
+              if (!injected) {
+                resolve(null);
+                return;
+              }
+              chrome.tabs.sendMessage(tabId, message, (retryResponse) => {
+                if (chrome.runtime.lastError) {
+                  const retryMessage =
+                    chrome.runtime.lastError.message || "Unknown tab messaging error";
+                  if (isIgnorableTabMessagingError(retryMessage)) {
+                    resolve(null);
+                    return;
+                  }
+                  reject(new Error(retryMessage));
+                  return;
+                }
+                resolve(retryResponse || null);
+              });
+            } catch (injectError) {
+              if (isIgnorableTabMessagingError(injectError?.message || injectError)) {
+                resolve(null);
+                return;
+              }
+              reject(injectError);
+            }
+            return;
+          }
+
+          if (isIgnorableTabMessagingError(errorMessage)) {
+            resolve(null);
+            return;
+          }
+          reject(new Error(errorMessage));
+          return;
+        }
+        resolve(response || null);
+      });
+    };
+
+    attemptSend();
+  });
+}
+
+async function clearStudyDistractionBadge() {
+  await chrome.action.setBadgeText({ text: "" });
+  await chrome.action.setTitle({ title: "Website Use Tracker" });
+}
+
+async function setStudyDistractionBadge(domain) {
+  await chrome.action.setBadgeBackgroundColor({ color: "#dc2626" });
+  await chrome.action.setBadgeText({ text: "!!" });
+  await chrome.action.setTitle({
+    title: domain
+      ? `Study Mode distraction detected on ${domain}`
+      : "Study Mode distraction detected",
+  });
+}
+
+async function updateStudyDistractionBadge(domain, url) {
+  const [studyState, studySettings] = await Promise.all([getStudyModeState(), getStudySettings()]);
+  if (!studyState.active || !domain || !url) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
+
+  const classification = classifyStudyVisit(domain, url, studySettings);
+  if (!classification.isDistracting) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
+
+  await setStudyDistractionBadge(domain);
+  return true;
+}
+
+async function maybeShowStudyAlert(tab, domain, url) {
+  if (!tab?.id || !domain || !url || !isTrackableUrl(url)) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
+
+  const [studyState, studySettings] = await Promise.all([getStudyModeState(), getStudySettings()]);
+  if (!studyState.active) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
+
+  const classification = classifyStudyVisit(domain, url, studySettings);
+  if (!classification.isDistracting) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
+
+  await setStudyDistractionBadge(domain);
+
+  const now = Date.now();
+  const lastAlertAt = Number(studyState.lastDistractionAlertAt) || 0;
+  const lastAlertUrl = studyState.lastDistractionAlertUrl || null;
+  if (lastAlertUrl === url && now - lastAlertAt < STUDY_ALERT_COOLDOWN_MS) {
+    return false;
+  }
+
+  try {
+    await withTimeout(
+      sendMessageToTab(tab.id, {
+        type: "SHOW_STUDY_ALERT",
+        payload: {
+          domain,
+          url,
+          siteName: domain,
+        },
+      }),
+      30000
+    );
+  } catch {
+    return false;
+  }
+
+  studyState.lastDistractionAlertAt = now;
+  studyState.lastDistractionAlertUrl = url;
+  await setStudyModeState(studyState);
+  return true;
+}
+
+function isDeepDiveUrl(url) {
+  return DEEP_DIVE_PATTERNS.some((pattern) => urlMatchesPattern(url, pattern));
+}
+
+function clearDeepDiveTimer(tabId) {
+  const existing = deepDiveTimers.get(tabId);
+  if (existing) {
+    clearTimeout(existing.timerId);
+    deepDiveTimers.delete(tabId);
+  }
+}
+
+async function startDeepDiveTimer(tabId, url) {
+  if (!Number.isInteger(tabId) || !url || !isDeepDiveUrl(url)) {
+    return;
+  }
+
+  const existing = deepDiveTimers.get(tabId);
+  if (existing?.url === url) {
+    return;
+  }
+
+  clearDeepDiveTimer(tabId);
+  const timerId = setTimeout(() => {
+    chrome.tabs.get(tabId, (tab) => {
+      const error = chrome.runtime.lastError;
+      if (error || !tab || tab.url !== url) {
+        clearDeepDiveTimer(tabId);
         return;
       }
-      resolve(response || null);
+
+      chrome.tabs.remove(tabId, () => {
+        const removeError = chrome.runtime.lastError;
+        void removeError;
+      });
+      sendUsageAlert(
+        "Deep dive closed",
+        "A Shorts/Reels tab was closed after 15 minutes to interrupt doomscrolling."
+      );
+      clearDeepDiveTimer(tabId);
     });
+  }, DEEP_DIVE_MAX_MS);
+
+  deepDiveTimers.set(tabId, { timerId, url });
+}
+
+async function syncDeepDiveTimer(tab) {
+  if (!tab || !Number.isInteger(tab.id)) {
+    return;
+  }
+
+  if (!isTrackableUrl(tab.url) || !isDeepDiveUrl(tab.url)) {
+    clearDeepDiveTimer(tab.id);
+    return;
+  }
+
+  await startDeepDiveTimer(tab.id, tab.url);
+}
+
+async function maybeTriggerLoopLockout(tab) {
+  const now = Date.now();
+  loopCount.push(now);
+  while (loopCount.length > 0 && now - loopCount[0] > LOOP_LOCKOUT_WINDOW_MS) {
+    loopCount.shift();
+  }
+
+  if (loopCount.length < LOOP_LOCKOUT_THRESHOLD) {
+    return false;
+  }
+
+  if (!tab?.id) {
+    return false;
+  }
+
+  loopCount.length = 0;
+  await chrome.tabs.update(tab.id, {
+    url: chrome.runtime.getURL(`cooldown.html?seconds=${COOLDOWN_PAGE_SECONDS}`),
   });
+  return true;
 }
 
 function withTimeout(promise, timeoutMs) {
@@ -1658,6 +2184,7 @@ async function maybeTriggerRevisitLoopPrompt({ ts, domain }) {
   }
 
   const domains = getTopDomainsInQueue(settings.maxUniqueDomains);
+  const activeTab = await getCurrentActiveTab();
   const response = await showRevisitLoopPrompt({
     switchCount,
     windowMinutes: settings.windowMinutes,
@@ -1684,6 +2211,8 @@ async function maybeTriggerRevisitLoopPrompt({ ts, domain }) {
   if (action === "break") {
     await chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html#take-break") });
   }
+
+  await maybeTriggerLoopLockout(activeTab);
 }
 
 async function maybeLogTabEvent(tab, reason = "activeChange") {
@@ -1758,6 +2287,7 @@ async function showThoughtPausePrompt(triggerType, domain) {
       payload: {
         triggerType,
         domain,
+        url: tab.url,
         strictMode: settings.strictMode,
         autoDismissSeconds: settings.autoDismissSeconds,
         allowNote: settings.allowNote,
@@ -1775,7 +2305,7 @@ async function showThoughtPausePrompt(triggerType, domain) {
   };
 }
 
-async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey = null }) {
+async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey = null, force = false }) {
   if (!domain) {
     return false;
   }
@@ -1786,7 +2316,7 @@ async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey 
     return false;
   }
 
-  if (!domainMatchesPauseTarget(settings, domain)) {
+  if (!force && !domainMatchesPauseTarget(settings, domain)) {
     return false;
   }
 
@@ -1805,6 +2335,7 @@ async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey 
   }
 
   if (
+    !force &&
     triggerType !== "rapid_switch" &&
     state.lastPromptAtMs &&
     now - state.lastPromptAtMs < settings.cooldownMinutes * 60 * 1000
@@ -1878,16 +2409,18 @@ async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey 
   state.lastPromptAtMs = now;
   await setThoughtPauseState(state);
 
-  await addThoughtPause({
-    timestamp: now,
-    dateKey: dayKey,
-    domain,
-    url: url || promptResult.tab.url || null,
-    triggerType,
-    choice,
-    note,
-    action,
-  });
+  if (!response.storedByContent) {
+    await addThoughtPause({
+      timestamp: now,
+      dateKey: dayKey,
+      domain,
+      url: url || promptResult.tab.url || null,
+      triggerType,
+      choice,
+      note,
+      action,
+    });
+  }
 
   return true;
 }
@@ -2115,23 +2648,37 @@ async function maybePromptRapidSwitch(domain, url) {
 async function syncTrackingFromActiveTab(reason = "sync") {
   try {
     const tab = await getCurrentActiveTab();
-    const domain = normalizeDomain(tab?.url);
     if (["tabActivated", "tabUpdated"].includes(reason)) {
       await maybeLogTabEvent(tab, reason);
     }
-    const tracking = await trackDomain(domain, reason);
+
+    const activityState = await getActivityState();
+    if (!canTrackActively(activityState)) {
+      await pauseActiveTracking(reason);
+      return;
+    }
+
+    const domain = normalizeDomain(tab?.url);
+    await trackDomain(domain, reason);
     await syncStudyMode(domain, tab?.url || null, reason);
+    await swallowIgnorableAsync(() => updateStudyDistractionBadge(domain, tab?.url || null));
 
-    await maybeSendUsageAlerts(domain, tab?.url || null);
+    await swallowIgnorableAsync(() => maybeSendUsageAlerts(domain, tab?.url || null));
 
-    if (domain && ["tabActivated", "windowFocus", "tabUpdated", "startup", "install", "idleReturn"].includes(reason)) {
-      await maybePromptFirstVisit(domain, tab?.url || null);
+    if (
+      domain &&
+      ["tabActivated", "tabUpdated", "startup", "install", "idleReturn", "interactionHeartbeat"].includes(reason)
+    ) {
+      await swallowIgnorableAsync(() => maybePromptFirstVisit(domain, tab?.url || null));
     }
 
     if (domain && reason === "heartbeat") {
-      await maybePromptContinuousUsage(domain, tab?.url || null);
+      await swallowIgnorableAsync(() => maybePromptContinuousUsage(domain, tab?.url || null));
     }
   } catch (error) {
+    if (isIgnorableTabMessagingError(error?.message || error)) {
+      return;
+    }
     console.error("syncTrackingFromActiveTab failed", error);
   }
 }
@@ -2225,6 +2772,7 @@ function getStudyModeAnalytics(
   let totalStudyTimeMs = 0;
   let totalDistractingTimeMs = 0;
   let totalDoomscrollMs = 0;
+  let deepDiveCount = 0;
   let totalSessions = 0;
   let totalSwitches = 0;
   const siteMap = new Map();
@@ -2237,6 +2785,7 @@ function getStudyModeAnalytics(
     totalStudyTimeMs += Math.max(0, Number(session.activeStudyTimeMs) || 0);
     totalDistractingTimeMs += Math.max(0, Number(session.distractionTimeMs) || 0);
     totalDoomscrollMs += Math.max(0, Number(session.doomscrollTimeMs) || 0);
+    deepDiveCount += Math.max(0, Number(session.deepDiveCount) || 0);
     totalSwitches += Math.max(0, Number(session.totalSwitches) || 0);
 
     const sites = Array.isArray(session.sites) ? session.sites : [];
@@ -2324,6 +2873,7 @@ function getStudyModeAnalytics(
     totalDistractingTimeText: formatDuration(totalDistractingTimeMs),
     totalDoomscrollTimeMs: totalDoomscrollMs,
     totalDoomscrollTimeText: formatDuration(totalDoomscrollMs),
+    deepDiveCount,
     focusRatio,
     focusTimeText: formatDuration(focusTimeMs),
     totalSwitches,
@@ -2357,6 +2907,8 @@ function getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold = 5) {
   const transitionMap = new Map();
   const switchingBuckets = new Array(144).fill(0);
   const hourDomainCounts = new Map();
+  const loopHours = new Array(24).fill(0);
+  let bypassAttempts = 0;
 
   const streakLengths = [];
   let currentStreakLength = 0;
@@ -2366,6 +2918,9 @@ function getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold = 5) {
     const event = tabEvents[i];
     const domain = event.domain;
     const timestamp = Number(event.timestamp) || 0;
+    if (event.reason === "bypass_attempt") {
+      bypassAttempts += 1;
+    }
     domainVisits.set(domain, (domainVisits.get(domain) || 0) + 1);
 
     const hour = Number.isInteger(event.hour) ? event.hour : new Date(timestamp).getHours();
@@ -2412,6 +2967,10 @@ function getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold = 5) {
         transitionMap.set(pairKey, current);
 
         if (gap < RAPID_GAP_MS) {
+          const reactiveHour = new Date(timestamp).getHours();
+          if (reactiveHour >= 0 && reactiveHour < 24) {
+            loopHours[reactiveHour] += 1;
+          }
           if (currentStreakLength === 0) {
             currentStreakLength = 1;
             currentStreakDomains = new Set([prev.domain, domain]);
@@ -2499,6 +3058,15 @@ function getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold = 5) {
     hourlyCounts: hourDomainCounts.get(domain) || new Array(24).fill(0),
   }));
 
+  let mostReactiveHour = null;
+  let maxLoopCount = 0;
+  for (let hour = 0; hour < loopHours.length; hour += 1) {
+    if (loopHours[hour] > maxLoopCount) {
+      maxLoopCount = loopHours[hour];
+      mostReactiveHour = hour;
+    }
+  }
+
   return {
     totalEvents: tabEvents.length,
     revisitDistributionTop3,
@@ -2511,6 +3079,9 @@ function getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold = 5) {
       histogram: streakHistogram,
     },
     heatmap,
+    loopHours,
+    mostReactiveHour,
+    bypassAttempts,
   };
 }
 
@@ -2564,14 +3135,281 @@ async function getLoopPromptSummary(nowMs = Date.now()) {
   };
 }
 
+function buildInsightLine(title, detail, tone = "neutral") {
+  return { title, detail, tone };
+}
+
+function getPeriodLabel(period) {
+  if (period === "daily") {
+    return "today";
+  }
+  if (period === "weekly") {
+    return "this week";
+  }
+  return "this month";
+}
+
+function formatHourLabel(hour) {
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) {
+    return "unknown";
+  }
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const normalized = hour % 12 === 0 ? 12 : hour % 12;
+  return `${normalized}:00 ${suffix}`;
+}
+
+function getFragmentationMetrics(sessions, behavioral, studyMode) {
+  const fragmentThresholdMs = 2 * 60 * 1000;
+  const sortedSessions = [...sessions].sort((a, b) => a.startTime - b.startTime);
+  let fragmentCount = 0;
+  const totalSessionMs = sortedSessions.reduce(
+    (sum, session) => sum + Math.max(0, Number(session.durationMs) || 0),
+    0
+  );
+  const totalHours = totalSessionMs > 0 ? totalSessionMs / ONE_HOUR_MS : 0;
+
+  for (let i = 0; i < sortedSessions.length - 1; i += 1) {
+    const current = sortedSessions[i];
+    const next = sortedSessions[i + 1];
+    if (
+      current.domain &&
+      next.domain &&
+      current.domain !== next.domain &&
+      Number(current.durationMs) > 0 &&
+      Number(current.durationMs) < fragmentThresholdMs
+    ) {
+      fragmentCount += 1;
+    }
+  }
+
+  return {
+    fragmentCount,
+    focusFragmentIndex:
+      totalHours > 0 ? Number((fragmentCount / totalHours).toFixed(2)) : fragmentCount,
+    deepDiveCount: Number(studyMode?.deepDiveCount) || 0,
+    mostReactiveHour: behavioral?.mostReactiveHour ?? null,
+    mostReactiveHourLabel: formatHourLabel(behavioral?.mostReactiveHour ?? null),
+  };
+}
+
+function getSystemHealth(sessions, fragmentation, studyMode) {
+  let productiveMs = 0;
+  for (const session of sessions) {
+    const productive =
+      session.productivityHint === "productive" || isProductiveDomain(session.domain);
+    if (productive) {
+      productiveMs += Math.max(0, Number(session.durationMs) || 0);
+    }
+  }
+
+  return {
+    uptimeMs: productiveMs,
+    uptimeText: formatDuration(productiveMs),
+    crashes: Number(studyMode?.deepDiveCount) || 0,
+    jitter: Number(fragmentation?.focusFragmentIndex) || 0,
+  };
+}
+
+function getLongestNonProductiveSession(sessions) {
+  let longest = null;
+
+  for (const session of sessions) {
+    const productive =
+      session.productivityHint === "productive" || isProductiveDomain(session.domain);
+    const durationMs = Math.max(0, Number(session.durationMs) || 0);
+    if (productive || durationMs <= 0) {
+      continue;
+    }
+
+    if (!longest || durationMs > longest.durationMs) {
+      longest = {
+        domain: session.domain || "unknown",
+        durationMs,
+        durationText: formatDuration(durationMs),
+      };
+    }
+  }
+
+  return longest;
+}
+
+function getYesterdayBounds() {
+  const now = new Date();
+  const end = new Date(now);
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - 1);
+  return { start: start.getTime(), end: end.getTime() };
+}
+
+function getNextDailyReportTime() {
+  const now = new Date();
+  const next = new Date(now);
+  next.setHours(REPORT_HOUR, 0, 0, 0);
+  if (next.getTime() <= now.getTime()) {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.getTime();
+}
+
+async function sendDailySystemReport() {
+  const bounds = getYesterdayBounds();
+  const [sessions, studySessions, studySettings, tabEvents] = await Promise.all([
+    getSessionsInRange(bounds.start, bounds.end),
+    getStudySessionsInRange(bounds.start, bounds.end),
+    getStudySettings(),
+    getTabEventsInRange(bounds.start, bounds.end),
+  ]);
+  const studyMode = getStudyModeAnalytics(studySessions, null, bounds, studySettings);
+  const behavioral = getBehavioralAnalyticsFromTabEvents(tabEvents, 5);
+  const fragmentation = getFragmentationMetrics(sessions, behavioral, studyMode);
+  const health = getSystemHealth(sessions, fragmentation, studyMode);
+
+  sendUsageAlert(
+    "Daily System Report",
+    `Yesterday: Uptime ${health.uptimeText}, Crashes ${health.crashes}.`
+  );
+}
+
+function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, behavioral, fragmentation }) {
+  const periodLabel = getPeriodLabel(period);
+  const lines = [];
+  const topOverall = topSites?.[0] || null;
+  const topDistraction = studyMode?.distractingSites?.[0] || null;
+  const topDoomscroll = studyMode?.doomscrollSurfaces?.[0] || null;
+  const topBouncePair = behavioral?.topBouncePairs?.[0] || null;
+  const totalPauses = Number(thoughtPause?.totalPauses) || 0;
+  const focusRatio = Number(studyMode?.focusRatio) || 0;
+  const distractingMs = Number(studyMode?.totalDistractingTimeMs) || 0;
+  const studyMs = Number(studyMode?.totalStudyTimeMs) || 0;
+  const doomscrollMs = Number(studyMode?.totalDoomscrollTimeMs) || 0;
+
+  if (studyMs > 0) {
+    lines.push(
+      buildInsightLine(
+        "Study time",
+        `You spent ${studyMode.totalStudyTimeText} in Study Mode ${periodLabel}.`,
+        studyMs >= 2 * 60 * 60 * 1000 ? "positive" : "neutral"
+      )
+    );
+
+    lines.push(
+      buildInsightLine(
+        "Study leakage",
+        distractingMs > 0
+          ? `${studyMode.totalDistractingTimeText} of that study time went to distracting sites, leaving a focus ratio of ${focusRatio}%.`
+          : `No distracting-site time was recorded during Study Mode ${periodLabel}.`,
+        distractingMs > 0 && focusRatio < 75 ? "warning" : "positive"
+      )
+    );
+  } else {
+    lines.push(
+      buildInsightLine(
+        "Study time",
+        `No Study Mode sessions were recorded ${periodLabel}, so you do not yet have a clean measure of focused work.`,
+        "warning"
+      )
+    );
+  }
+
+  if (topDistraction) {
+    lines.push(
+      buildInsightLine(
+        "Main distraction",
+        `${topDistraction.domain} took the most distracting study time at ${topDistraction.durationText}.`,
+        "warning"
+      )
+    );
+  } else if (topOverall) {
+    lines.push(
+      buildInsightLine(
+        "Main time sink",
+        `${topOverall.domain} was your biggest overall site by time at ${topOverall.durationText}.`,
+        "neutral"
+      )
+    );
+  }
+
+  if (doomscrollMs > 0 && topDoomscroll) {
+    lines.push(
+      buildInsightLine(
+        "Doomscrolling",
+        `You spent ${studyMode.totalDoomscrollTimeText} on short-form or scroll-heavy surfaces, mostly on ${topDoomscroll.label}.`,
+        "warning"
+      )
+    );
+  }
+
+  if (topBouncePair && topBouncePair.count >= 2) {
+    lines.push(
+      buildInsightLine(
+        "Switching pattern",
+        `Your strongest bounce pattern ${periodLabel} was ${topBouncePair.from} -> ${topBouncePair.to}, repeated ${topBouncePair.count} times with an average gap of ${topBouncePair.averageGapText}.`,
+        topBouncePair.highlight ? "warning" : "neutral"
+      )
+    );
+  }
+
+  if ((behavioral?.rapidLoops?.streakCount || 0) > 0) {
+    lines.push(
+      buildInsightLine(
+        "Reactive browsing",
+        `You had ${behavioral.rapidLoops.streakCount} rapid loop sessions ${periodLabel}; the longest loop was ${behavioral.rapidLoops.maxStreakLength} switches.`,
+        behavioral.rapidLoops.maxStreakLength >= 4 ? "warning" : "neutral"
+      )
+    );
+  }
+
+  if (totalPauses > 0) {
+    const topPauseSite = thoughtPause?.topTriggerSites?.[0];
+    lines.push(
+      buildInsightLine(
+        "Awareness prompts",
+        topPauseSite
+          ? `Thought Pause triggered ${totalPauses} times ${periodLabel}, most often on ${topPauseSite.domain}.`
+          : `Thought Pause triggered ${totalPauses} times ${periodLabel}.`,
+        "neutral"
+      )
+    );
+  }
+
+  if (totalTimeMs > 0 && studyMs > 0) {
+    const studyShare = Math.round((studyMs / totalTimeMs) * 100);
+    lines.push(
+      buildInsightLine(
+        "Intentional vs general browsing",
+        `${studyShare}% of your tracked browser time ${periodLabel} happened inside Study Mode.`,
+        studyShare >= 50 ? "positive" : "warning"
+      )
+    );
+  }
+
+  if (fragmentation) {
+    const reactiveHourText =
+      fragmentation.mostReactiveHour !== null
+        ? fragmentation.mostReactiveHourLabel
+        : "not clear yet";
+    lines.unshift(
+      buildInsightLine(
+        "Fragmentation summary",
+        `${period === "daily" ? "Today" : "During this period"}, your focus was fragmented into ${fragmentation.fragmentCount} pieces. You fell into ${fragmentation.deepDiveCount} Deep Dives. Your most reactive hour was ${reactiveHourText}.`,
+        fragmentation.fragmentCount > 0 || fragmentation.deepDiveCount > 0 ? "warning" : "positive"
+      )
+    );
+  }
+
+  return lines.slice(0, 6);
+}
+
 async function getStats(period) {
   const bounds = getPeriodBounds(period);
-  const [sessions, pauses, studySessions, activeStudyState, studySettings] = await Promise.all([
+  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
     getStudyModeState(),
     getStudySettings(),
+    getBehavioralAnalytics(period, 5),
   ]);
 
   const domainTotals = new Map();
@@ -2595,6 +3433,12 @@ async function getStats(period) {
   ]);
   const loopPrompts = await getLoopPromptSummary();
   const studyMode = getStudyModeAnalytics(studySessions, activeStudyState, bounds, studySettings);
+  const fragmentation = getFragmentationMetrics(sessions, behavioral, studyMode);
+  const thoughtPause = {
+    ...getThoughtPauseAnalytics(pauses, sessions),
+    todayCount: todayPauses.length,
+    weekCount: weekPauses.length,
+  };
   const studyStatus = activeStudyState.active
     ? {
         active: true,
@@ -2608,6 +3452,8 @@ async function getStats(period) {
         startedAt: null,
         currentSession: null,
       };
+  const systemHealth = getSystemHealth(sessions, fragmentation, studyMode);
+  const longestNonProductiveSession = getLongestNonProductiveSession(sessions);
 
   return {
     period,
@@ -2619,13 +3465,13 @@ async function getStats(period) {
     totalTimeText: formatDuration(totalTimeMs),
     maxWebsite,
     topSites,
-    thoughtPause: {
-      ...getThoughtPauseAnalytics(pauses, sessions),
-      todayCount: todayPauses.length,
-      weekCount: weekPauses.length,
-    },
+    thoughtPause,
     studyMode,
     studyStatus,
+    fragmentation,
+    systemHealth,
+    longestNonProductiveSession,
+    insights: getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, behavioral, fragmentation }),
     loopPrompts,
   };
 }
@@ -2643,6 +3489,7 @@ async function clearData(period) {
     await chrome.storage.local.remove(THOUGHT_PAUSE_STATE_KEY);
     await chrome.storage.local.remove(TAB_EVENT_STATE_KEY);
     await chrome.storage.local.remove(LOOP_STATE_KEY);
+    await chrome.storage.local.remove(ACTIVITY_STATE_KEY);
     loopSwitchQueue.length = 0;
     analyticsCache.clear();
     return;
@@ -2658,6 +3505,8 @@ async function clearData(period) {
 }
 
 async function initializeAlarmsAndState() {
+  chrome.idle.setDetectionInterval(IDLE_DETECTION_SECONDS);
+
   await chrome.alarms.create(HEARTBEAT_ALARM, {
     periodInMinutes: HEARTBEAT_MINUTES,
   });
@@ -2666,9 +3515,16 @@ async function initializeAlarmsAndState() {
     periodInMinutes: ONE_DAY_MINUTES,
   });
 
+  await chrome.alarms.create(DAILY_REPORT_ALARM, {
+    when: getNextDailyReportTime(),
+    periodInMinutes: ONE_DAY_MINUTES,
+  });
+
   await pruneOldSessions();
   await recoverActiveSessionOnStartup();
 }
+
+initializeAlarmsAndState().catch(() => {});
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initializeAlarmsAndState();
@@ -2686,10 +3542,16 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     return;
   }
 
+  if (alarm.name === DAILY_REPORT_ALARM) {
+    await sendDailySystemReport();
+    return;
+  }
+
   if (alarm.name !== HEARTBEAT_ALARM) {
     return;
   }
 
+  await expireTrackingWithoutHeartbeat();
   await syncTrackingFromActiveTab("heartbeat");
 });
 
@@ -2698,9 +3560,15 @@ chrome.tabs.onActivated.addListener(async () => {
   const domain = normalizeDomain(tab?.url);
   await maybePromptRapidSwitch(domain, tab?.url || null);
   await syncTrackingFromActiveTab("tabActivated");
+  await maybeShowStudyAlert(tab, domain, tab?.url || null);
+  await syncDeepDiveTimer(tab);
 });
 
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (changeInfo.url || changeInfo.status === "complete") {
+    await syncDeepDiveTimer(tab);
+  }
+
   if (changeInfo.status !== "complete") {
     return;
   }
@@ -2708,29 +3576,55 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (activeTab && activeTab.id === tabId) {
     await syncTrackingFromActiveTab("tabUpdated");
+    await maybeShowStudyAlert(tab, normalizeDomain(tab?.url), tab?.url || null);
   }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clearDeepDiveTimer(tabId);
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    await commitActiveSession("windowBlur");
-    await syncStudyMode(null, null, "windowBlur");
+    const state = await getActivityState();
+    await setActivityState({
+      ...state,
+      chromeFocused: false,
+      waitingForInteraction: true,
+    });
+    await pauseActiveTracking("windowBlur");
     return;
   }
 
-  await syncTrackingFromActiveTab("windowFocus");
+  const state = await getActivityState();
+  await setActivityState({
+    ...state,
+    chromeFocused: true,
+    waitingForInteraction: true,
+  });
+  await pauseActiveTracking("windowFocusWait");
 });
 
 chrome.idle.onStateChanged.addListener(async (newState) => {
   if (newState === "active") {
-    await syncTrackingFromActiveTab("idleReturn");
+    const state = await getActivityState();
+    await setActivityState({
+      ...state,
+      idleState: "active",
+      waitingForInteraction: true,
+    });
     return;
   }
-  await commitActiveSession(`idle:${newState}`);
-  await syncStudyMode(null, null, `idle:${newState}`);
+  const state = await getActivityState();
+  await setActivityState({
+    ...state,
+    idleState: newState,
+    waitingForInteraction: true,
+  });
+  await pauseActiveTracking(`idle:${newState}`);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== "object") {
     sendResponse({ ok: false, error: "Invalid message" });
     return;
@@ -2750,9 +3644,36 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "USER_HEARTBEAT") {
+    (async () => {
+      const activeTab = await getCurrentActiveTab();
+      if (!activeTab || !sender?.tab?.id || activeTab.id !== sender.tab.id) {
+        return { accepted: false };
+      }
+
+      const now = Date.now();
+      const state = await getActivityState();
+      const nextState = {
+        ...state,
+        chromeFocused: true,
+        idleState: "active",
+        waitingForInteraction: false,
+        lastHeartbeatAt: now,
+        lastHeartbeatTabId: sender.tab.id,
+        lastHeartbeatWindowId: Number.isInteger(sender.tab.windowId) ? sender.tab.windowId : null,
+      };
+      await setActivityState(nextState);
+      await syncTrackingFromActiveTab("interactionHeartbeat");
+      return { accepted: true };
+    })()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type === "GET_TRACKING_STATUS") {
-    Promise.all([getActiveSession(), getStudyModeState(), getStudySettings()])
-      .then(([active, studyMode, studySettings]) =>
+    Promise.all([getActiveSession(), getStudyModeState(), getStudySettings(), getCurrentActiveTab()])
+      .then(([active, studyMode, studySettings, tab]) =>
         sendResponse({
           ok: true,
           data: {
@@ -2771,6 +3692,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                   currentDomain: null,
                   session: null,
                 },
+            activeTab: {
+              domain: normalizeDomain(tab?.url) || null,
+              url: tab?.url || null,
+            },
           },
         })
       )
@@ -2787,6 +3712,119 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   if (message.type === "STOP_STUDY_MODE") {
     stopStudyMode()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "MARK_CURRENT_SITE_DISTRACTING") {
+    getCurrentActiveTab()
+      .then((tab) => addCurrentSiteToDistractingList(tab?.url || null))
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "STORE_THOUGHT_PAUSE_RESPONSE") {
+    const payload = message.payload || {};
+    const timestamp = Date.now();
+    addThoughtPause({
+      timestamp,
+      dateKey: getDayKeyFromMs(timestamp),
+      domain: typeof payload.domain === "string" ? payload.domain : "unknown",
+      url: typeof payload.url === "string" ? payload.url : null,
+      triggerType: typeof payload.triggerType === "string" ? payload.triggerType : "manual_continue",
+      choice: typeof payload.choice === "string" ? payload.choice : null,
+      note: typeof payload.note === "string" ? payload.note.slice(0, 280) : "",
+      action: typeof payload.action === "string" ? payload.action : "continue",
+    })
+      .then(() => sendResponse({ ok: true, data: { stored: true } }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "LOG_BYPASS_ATTEMPT") {
+    getCurrentActiveTab()
+      .then((tab) => {
+        const domain = normalizeDomain(tab?.url) || "unknown";
+        const now = Date.now();
+        return addTabEvent({
+          timestamp: now,
+          dateKey: getDayKeyFromMs(now),
+          domain,
+          prevDomain: null,
+          url: tab?.url || null,
+          hour: new Date(now).getHours(),
+          minuteBucket: Math.floor(now / 60000),
+          isTracked: true,
+          reason: "bypass_attempt",
+        });
+      })
+      .then(() => sendResponse({ ok: true, data: { logged: true } }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "PROCESS_YOUTUBE_METADATA") {
+    const payload = message.payload || {};
+    const url = typeof payload.url === "string" ? payload.url : null;
+    const domain = normalizeDomain(url);
+    const matchedKeywords = Array.isArray(payload.matchedKeywords)
+      ? payload.matchedKeywords.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const allowKeywords = Array.isArray(payload.allowKeywords)
+      ? payload.allowKeywords.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const blockKeywords = Array.isArray(payload.blockKeywords)
+      ? payload.blockKeywords.map((item) => String(item || "").trim()).filter(Boolean)
+      : [];
+    const title = typeof payload.title === "string" ? payload.title : "";
+
+    Promise.resolve()
+      .then(async () => {
+        if (!domain || domain !== "youtube.com") {
+          return { classification: "ignored" };
+        }
+
+        if (url && isDeepDiveUrl(url)) {
+          const activeTab = await getCurrentActiveTab();
+          await syncDeepDiveTimer(activeTab);
+        }
+
+        if (blockKeywords.length > 0) {
+          await maybePromptThoughtPause({
+            triggerType: "youtube_blocked_title",
+            domain,
+            url,
+            force: true,
+          });
+          return { classification: "blocked", blockKeywords };
+        }
+
+        if (allowKeywords.length > 0) {
+          await markCurrentSessionProductive({
+            title,
+            keywords: allowKeywords,
+          });
+          return { classification: "productive_title", matchedKeywords: allowKeywords };
+        }
+
+        if (matchedKeywords.length > 0) {
+          await markCurrentSessionProductive({
+            title,
+            keywords: matchedKeywords,
+          });
+          return { classification: "productive", matchedKeywords };
+        }
+
+        await maybePromptThoughtPause({
+          triggerType: "youtube_non_educational",
+          domain,
+          url,
+          force: true,
+        });
+        return { classification: "non_productive" };
+      })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

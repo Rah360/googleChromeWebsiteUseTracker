@@ -1,12 +1,14 @@
 :root {
-  font-family: "Segoe UI", Tahoma, sans-serif;
-  color: #1f2937;
+  font-family: "SFMono-Regular", "Menlo", "Monaco", "Consolas", monospace;
+  color: #d1fae5;
 }
 
 body {
   margin: 0;
   min-width: 360px;
-  background: #f8fafc;
+  background:
+    radial-gradient(circle at top, rgba(16, 185, 129, 0.14), transparent 28%),
+    linear-gradient(180deg, #020617 0%, #071a13 100%);
 }
 
 .app {
@@ -39,11 +41,19 @@ h3 {
 
 select,
 button {
-  border: 1px solid #cbd5e1;
+  border: 1px solid #14532d;
   border-radius: 8px;
   padding: 8px;
-  background: #fff;
+  background: #03130f;
+  color: #d1fae5;
   font-size: 0.85rem;
+}
+
+.system-health {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 10px;
+  margin-bottom: 12px;
 }
 
 .stats-grid {
@@ -54,29 +64,136 @@ button {
 }
 
 .card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
+  background: rgba(3, 19, 15, 0.88);
+  border: 1px solid #14532d;
   border-radius: 10px;
   padding: 10px;
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.08);
 }
 
 .card p {
   margin: 8px 0 0;
   font-size: 0.85rem;
   font-weight: 600;
+  color: #86efac;
 }
 
 .top-sites {
-  background: #fff;
-  border: 1px solid #e2e8f0;
+  background: rgba(3, 19, 15, 0.88);
+  border: 1px solid #14532d;
   border-radius: 10px;
   padding: 10px;
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.08);
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.metric-label {
+  display: block;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #6ee7b7;
+}
+
+.health-grid p {
+  margin: 6px 0 0;
+  font-size: 1.2rem;
+}
+
+.feline-panel {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.feline-visual {
+  width: 120px;
+  height: 100px;
+  display: grid;
+  place-items: center;
+}
+
+.cat-svg {
+  width: 120px;
+  height: 100px;
+}
+
+.feline-copy p {
+  margin: 6px 0 0;
+  color: #86efac;
+}
+
+.insights-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.behavioral-mirror {
+  margin-top: 8px;
+}
+
+.behavioral-mirror ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.behavioral-mirror li {
+  margin-bottom: 10px;
+  line-height: 1.5;
+  color: #d1fae5;
+}
+
+.behavioral-mirror strong {
+  color: #86efac;
+}
+
+.cats-advice {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed #14532d;
+  color: #facc15;
+  font-size: 0.82rem;
+}
+
+.insight-item {
+  border: 1px solid #14532d;
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(2, 12, 10, 0.82);
+}
+
+.insight-item h3 {
+  margin: 0 0 4px;
+}
+
+.insight-item p {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.insight-positive {
+  border-color: #16a34a;
+  background: rgba(20, 83, 45, 0.28);
+}
+
+.insight-warning {
+  border-color: #b45309;
+  background: rgba(120, 53, 15, 0.28);
 }
 
 .chart-help {
   margin: 6px 0 8px;
   font-size: 0.78rem;
-  color: #475569;
+  color: #6ee7b7;
 }
 
 .thought-pause {
@@ -145,21 +262,21 @@ button {
 
 .tp-table th,
 .tp-table td {
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid #14532d;
   text-align: left;
   padding: 6px 4px;
 }
 
 .highlight-row {
-  background: #fff7ed;
+  background: rgba(120, 53, 15, 0.28);
 }
 
 .chart-svg {
   width: 100%;
   height: 180px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #14532d;
   border-radius: 8px;
-  background: #fff;
+  background: rgba(2, 12, 10, 0.82);
 }
 
 .bar-group {
@@ -200,7 +317,7 @@ button {
   width: 10px;
   height: 10px;
   border-radius: 2px;
-  border: 1px solid #cbd5e1;
+  border: 1px solid #14532d;
 }
 
 .hist-row {
@@ -214,14 +331,14 @@ button {
 
 .hist-bar {
   height: 10px;
-  background: #e2e8f0;
+  background: #0f2f24;
   border-radius: 6px;
   overflow: hidden;
 }
 
 .hist-fill {
   height: 100%;
-  background: #2563eb;
+  background: #10b981;
 }
 
 .heatmap-grid {
@@ -261,18 +378,26 @@ button {
 }
 
 button.danger {
-  border-color: #ef4444;
-  color: #b91c1c;
+  border-color: #dc2626;
+  color: #fecaca;
 }
 
 .status {
   min-height: 1.1rem;
   margin: 8px 0 0;
   font-size: 0.8rem;
-  color: #0f766e;
+  color: #34d399;
 }
 
 @media (max-width: 800px) {
+  .system-health {
+    grid-template-columns: 1fr;
+  }
+
+  .feline-panel {
+    grid-template-columns: 1fr;
+  }
+
   .thought-cards {
     grid-template-columns: 1fr;
   }

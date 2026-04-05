@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cooldown</title>
+    <link rel="stylesheet" href="cooldown.css" />
+  </head>
+  <body>
+    <main class="cooldown-app">
+      <p class="eyebrow">Cooldown</p>
+      <h1>Take a minute before going back.</h1>
+      <p class="body-copy">
+        Repeated loop switching was detected. This tab is paused for a short reset window.
+      </p>
+      <div class="timer-card">
+        <span id="cooldown-timer">60</span>
+        <span>seconds remaining</span>
+      </div>
+      <button id="close-tab" disabled>Close tab</button>
+    </main>
+
+    <script src="cooldown.js"></script>
+  </body>
+</html>
