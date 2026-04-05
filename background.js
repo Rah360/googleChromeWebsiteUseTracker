@@ -1,10 +1,11 @@
 const DB_NAME = "websiteUseTracker";
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const SESSION_STORE = "sessions";
 const THOUGHT_PAUSE_STORE = "thought_pauses";
 const TAB_EVENT_STORE = "tab_events";
 const LOOP_PROMPT_STORE = "loop_prompts";
 const STUDY_SESSION_STORE = "study_sessions";
+const STACCATO_BURST_STORE = "staccato_bursts";
 
 const ACTIVE_SESSION_KEY = "activeSession";
 const ALERT_STATE_KEY = "alertState";
@@ -16,6 +17,7 @@ const LOOP_STATE_KEY = "revisitLoopState";
 const STUDY_MODE_KEY = "studyModeState";
 const STUDY_SETTINGS_KEY = "studyModeSettings";
 const ACTIVITY_STATE_KEY = "activityState";
+const BASELINE_STATE_KEY = "baselineObservationState";
 
 const HEARTBEAT_ALARM = "trackingHeartbeat";
 const RETENTION_ALARM = "retentionCleanup";
@@ -41,6 +43,9 @@ const COOLDOWN_PAGE_SECONDS = 60;
 const REPORT_HOUR = 9;
 const IDLE_DETECTION_SECONDS = 180;
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+const BASELINE_DAYS = 7;
+const STACCATO_MAX_STAY_MS = 120 * 1000;
+const STACCATO_RETURN_WINDOW_MS = 5 * 60 * 1000;
 const PRODUCTIVE_DOMAINS = [
   "github.com",
   "notion.so",
@@ -134,6 +139,7 @@ const REQUIRED_DB_STORES = [
   TAB_EVENT_STORE,
   LOOP_PROMPT_STORE,
   STUDY_SESSION_STORE,
+  STACCATO_BURST_STORE,
 ];
 
 const analyticsCache = new Map();
@@ -235,6 +241,16 @@ function openDb() {
         studyStore.createIndex("dateKey", "dateKey", { unique: false });
         studyStore.createIndex("endTime", "endTime", { unique: false });
       }
+
+      if (!db.objectStoreNames.contains(STACCATO_BURST_STORE)) {
+        const burstStore = db.createObjectStore(STACCATO_BURST_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        burstStore.createIndex("startTime", "startTime", { unique: false });
+        burstStore.createIndex("dateKey", "dateKey", { unique: false });
+        burstStore.createIndex("domain", "domain", { unique: false });
+      }
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -300,22 +316,52 @@ function isMissingStoreError(error) {
   return message.includes("Missing store") || message.includes("object stores was not found");
 }
 
-function addSession(session) {
-  return getStore(SESSION_STORE, "readwrite").then(
+async function addSession(session) {
+  const enriched = {
+    ...session,
+    late_night_usage: isLateNightUsage(session.startTime, session.endTime || session.startTime),
+  };
+  await getStore(SESSION_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
-        const request = store.add(session);
+        const request = store.add(enriched);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       })
   );
+  await maybeRecordStaccatoBurst(enriched);
 }
 
-function addThoughtPause(entry) {
-  return getStore(THOUGHT_PAUSE_STORE, "readwrite").then(
+async function addThoughtPause(entry) {
+  const note = String(entry.note || "").trim();
+  const normalizedNote = note.toLowerCase().replace(/\s+/g, " ");
+  const wordCount = note ? note.split(/\s+/).filter(Boolean).length : 0;
+  let sameDayMatches = 0;
+
+  if (normalizedNote) {
+    const dayStart = parseDateKeyToMs(entry.dateKey);
+    if (dayStart !== null) {
+      const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+      const sameDayPauses = await getThoughtPausesInRange(dayStart, dayEnd);
+      sameDayMatches = sameDayPauses.filter((item) => {
+        const existing = String(item.note || "").trim().toLowerCase().replace(/\s+/g, " ");
+        return existing && existing === normalizedNote;
+      }).length;
+    }
+  }
+
+  const enriched = {
+    ...entry,
+    word_count: wordCount,
+    is_repetitive: sameDayMatches >= 1,
+    repetitive_bypass: sameDayMatches >= 2,
+    late_night_usage: isLateNightUsage(entry.timestamp),
+  };
+
+  await getStore(THOUGHT_PAUSE_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
-        const request = store.add(entry);
+        const request = store.add(enriched);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       })
@@ -323,10 +369,14 @@ function addThoughtPause(entry) {
 }
 
 function addTabEvent(entry) {
+  const enriched = {
+    ...entry,
+    late_night_usage: isLateNightUsage(entry.timestamp),
+  };
   return getStore(TAB_EVENT_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
-        const request = store.add(entry);
+        const request = store.add(enriched);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       })
@@ -334,10 +384,14 @@ function addTabEvent(entry) {
 }
 
 function addLoopPrompt(entry) {
+  const enriched = {
+    ...entry,
+    late_night_usage: isLateNightUsage(entry.timestamp),
+  };
   return getStore(LOOP_PROMPT_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
-        const request = store.add(entry);
+        const request = store.add(enriched);
         request.onsuccess = () => resolve();
         request.onerror = () => reject(request.error);
       })
@@ -350,7 +404,22 @@ function addLoopPrompt(entry) {
 }
 
 function addStudySession(entry) {
+  const enriched = {
+    ...entry,
+    late_night_usage: isLateNightUsage(entry.startTime, entry.endTime || entry.startTime),
+  };
   return getStore(STUDY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.add(enriched);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function addStaccatoBurst(entry) {
+  return getStore(STACCATO_BURST_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.add(entry);
@@ -411,6 +480,17 @@ function clearAllLoopPrompts() {
 
 function clearAllStudySessions() {
   return getStore(STUDY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function clearAllStaccatoBursts() {
+  return getStore(STACCATO_BURST_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.clear();
@@ -540,6 +620,29 @@ function deleteStudySessionsInRange(startMs, endMs) {
   );
 }
 
+function deleteStaccatoBurstsInRange(startMs, endMs) {
+  return getStore(STACCATO_BURST_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function getSessionsInRange(startMs, endMs) {
   return getStore(SESSION_STORE, "readonly").then(
     (store) =>
@@ -608,6 +711,73 @@ function getStudySessionsInRange(startMs, endMs) {
         request.onerror = () => reject(request.error);
       })
   );
+}
+
+function getStaccatoBurstsInRange(startMs, endMs) {
+  return getStore(STACCATO_BURST_STORE, "readonly").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const request = index.getAll(keyRange);
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function isNonProductiveSession(session) {
+  return !(
+    session?.productivityHint === "productive" ||
+    isProductiveDomain(session?.domain)
+  );
+}
+
+async function maybeRecordStaccatoBurst(session) {
+  const durationMs = Math.max(0, Number(session?.durationMs) || 0);
+  if (!session?.domain || durationMs <= 0 || durationMs >= STACCATO_MAX_STAY_MS || !isNonProductiveSession(session)) {
+    return;
+  }
+
+  const lookbackStart = Math.max(0, Number(session.startTime) - 10 * 60 * 1000);
+  const recentSessions = await getSessionsInRange(lookbackStart, Number(session.endTime) + 1);
+  const previous = recentSessions
+    .filter((item) => item.domain === session.domain && Number(item.endTime) <= Number(session.startTime))
+    .sort((a, b) => Number(b.endTime) - Number(a.endTime))[0];
+
+  if (!previous) {
+    return;
+  }
+
+  const previousDurationMs = Math.max(0, Number(previous.durationMs) || 0);
+  const gapMs = Math.max(0, Number(session.startTime) - Number(previous.endTime));
+  if (
+    previousDurationMs <= 0 ||
+    previousDurationMs >= STACCATO_MAX_STAY_MS ||
+    !isNonProductiveSession(previous) ||
+    gapMs > STACCATO_RETURN_WINDOW_MS
+  ) {
+    return;
+  }
+
+  const existing = await getStaccatoBurstsInRange(Number(previous.startTime), Number(session.startTime) + 1);
+  const duplicate = existing.some(
+    (item) => Number(item.startTime) === Number(previous.startTime) && Number(item.returnTime) === Number(session.startTime)
+  );
+  if (duplicate) {
+    return;
+  }
+
+  await addStaccatoBurst({
+    dateKey: getDayKeyFromMs(previous.startTime),
+    domain: session.domain,
+    startTime: Number(previous.startTime),
+    returnTime: Number(session.startTime),
+    firstDurationMs: previousDurationMs,
+    returnDurationMs: durationMs,
+    gapMs,
+    late_night_usage: isLateNightUsage(previous.startTime, session.endTime || session.startTime),
+  });
 }
 
 function deleteSessionsOlderThan(cutoffMs) {
@@ -730,6 +900,29 @@ function deleteStudySessionsOlderThan(cutoffMs) {
   );
 }
 
+function deleteStaccatoBurstsOlderThan(cutoffMs) {
+  return getStore(STACCATO_BURST_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function normalizeDomain(urlString) {
   if (!urlString) {
     return null;
@@ -821,6 +1014,59 @@ function getWeekKeyFromMs(ms) {
 function parseDateKeyToMs(key) {
   const time = Date.parse(`${key}T00:00:00`);
   return Number.isFinite(time) ? time : null;
+}
+
+function getMumbaiHour(ms) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata",
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(ms));
+  const hourPart = parts.find((part) => part.type === "hour");
+  return hourPart ? Number(hourPart.value) : new Date(ms).getHours();
+}
+
+function isLateNightHour(hour) {
+  return hour >= 22 || hour < 2;
+}
+
+function isLateNightUsage(startMs, endMs = startMs) {
+  if (!Number.isFinite(startMs)) {
+    return false;
+  }
+  const safeEnd = Number.isFinite(endMs) ? endMs : startMs;
+  return isLateNightHour(getMumbaiHour(startMs)) || isLateNightHour(getMumbaiHour(safeEnd));
+}
+
+async function getBaselineState() {
+  const data = await chrome.storage.local.get(BASELINE_STATE_KEY);
+  const raw = data[BASELINE_STATE_KEY];
+  if (raw && Number.isFinite(raw.startedAt)) {
+    return raw;
+  }
+
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const state = { startedAt: now.getTime() };
+  await chrome.storage.local.set({ [BASELINE_STATE_KEY]: state });
+  return state;
+}
+
+async function getBaselineStatus() {
+  const state = await getBaselineState();
+  const startDate = new Date(state.startedAt);
+  startDate.setHours(0, 0, 0, 0);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const elapsedDays = Math.max(0, Math.floor((now.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)));
+  const daysRemaining = Math.max(0, BASELINE_DAYS - elapsedDays);
+
+  return {
+    startedAt: state.startedAt,
+    totalDays: BASELINE_DAYS,
+    elapsedDays,
+    daysRemaining,
+  };
 }
 
 function clone(value) {
@@ -1504,6 +1750,7 @@ function createStudySessionRecord(state, endTime = Date.now()) {
     dateKey: getDayKeyFromMs(state.startedAt || endTime),
     startTime: state.startedAt || endTime,
     endTime,
+    late_night_usage: isLateNightUsage(state.startedAt || endTime, endTime),
     durationMs: Math.max(0, endTime - (state.startedAt || endTime)),
     activeStudyTimeMs: state.totalActiveMs,
     distractionTimeMs: state.totalDistractingMs,
@@ -2488,6 +2735,7 @@ async function pruneOldSessions() {
   await deleteTabEventsOlderThan(cutoffMs);
   await deleteLoopPromptsOlderThan(cutoffMs);
   await deleteStudySessionsOlderThan(cutoffMs);
+  await deleteStaccatoBurstsOlderThan(cutoffMs);
   await pruneAlertState();
   await pruneThoughtPauseState();
   analyticsCache.clear();
@@ -3233,6 +3481,273 @@ function getLongestNonProductiveSession(sessions) {
   return longest;
 }
 
+function getLastSevenDaysBounds() {
+  const now = Date.now();
+  const startDate = new Date();
+  startDate.setHours(0, 0, 0, 0);
+  startDate.setDate(startDate.getDate() - 6);
+  return {
+    start: startDate.getTime(),
+    end: now,
+  };
+}
+
+function getTimeOfDayLabel(hour) {
+  if (hour >= 5 && hour < 12) {
+    return "morning";
+  }
+  if (hour >= 12 && hour < 17) {
+    return "afternoon";
+  }
+  if (hour >= 17 && hour < 22) {
+    return "evening";
+  }
+  return "night";
+}
+
+function getDailyFragmentationScoresForExport(sessions, startMs, endMs) {
+  const dayBuckets = new Map();
+  const cursor = new Date(startMs);
+  cursor.setHours(0, 0, 0, 0);
+
+  while (cursor.getTime() <= endMs) {
+    const key = formatDateKey(cursor);
+    dayBuckets.set(key, []);
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  for (const session of sessions) {
+    const key = getDayKeyFromMs(session.startTime || session.endTime || Date.now());
+    if (!dayBuckets.has(key)) {
+      dayBuckets.set(key, []);
+    }
+    dayBuckets.get(key).push(session);
+  }
+
+  return [...dayBuckets.entries()].map(([dateKey, rows]) => {
+    const sorted = rows
+      .filter((row) => row && Number.isFinite(row.startTime))
+      .sort((a, b) => a.startTime - b.startTime);
+    let fragmentCount = 0;
+    let totalMs = 0;
+
+    for (let i = 0; i < sorted.length; i += 1) {
+      totalMs += Math.max(0, Number(sorted[i].durationMs) || 0);
+      if (i >= sorted.length - 1) {
+        continue;
+      }
+      const current = sorted[i];
+      const next = sorted[i + 1];
+      if (
+        current.domain &&
+        next.domain &&
+        current.domain !== next.domain &&
+        Number(current.durationMs) > 0 &&
+        Number(current.durationMs) < 2 * 60 * 1000
+      ) {
+        fragmentCount += 1;
+      }
+    }
+
+    const totalHours = totalMs > 0 ? totalMs / ONE_HOUR_MS : 0;
+    return {
+      date: dateKey,
+      fi: totalHours > 0 ? Number((fragmentCount / totalHours).toFixed(2)) : 0,
+      fragments: fragmentCount,
+      tracked_hours: Number(totalHours.toFixed(2)),
+    };
+  });
+}
+
+function getTopLoopPairsForExport(loopPrompts) {
+  const pairStats = new Map();
+
+  for (const prompt of loopPrompts) {
+    const domains = Array.isArray(prompt.domains)
+      ? [...new Set(prompt.domains.map((item) => String(item || "").trim()).filter(Boolean))]
+      : [];
+    if (domains.length < 2) {
+      continue;
+    }
+
+    const windowMinutes = Math.max(1, Number(prompt.windowMinutes) || 1);
+    const switchCount = Math.max(0, Number(prompt.switchCount) || 0);
+    const bounceFrequency = Number((switchCount / windowMinutes).toFixed(2));
+
+    for (let i = 0; i < domains.length; i += 1) {
+      for (let j = i + 1; j < domains.length; j += 1) {
+        const pair = [domains[i], domains[j]].sort().join(" <-> ");
+        const current = pairStats.get(pair) || {
+          pair,
+          events: 0,
+          totalSwitches: 0,
+          totalMinutes: 0,
+        };
+        current.events += 1;
+        current.totalSwitches += switchCount;
+        current.totalMinutes += windowMinutes;
+        current.lastBounceFrequency = bounceFrequency;
+        pairStats.set(pair, current);
+      }
+    }
+  }
+
+  return [...pairStats.values()]
+    .map((item) => ({
+      pair: item.pair,
+      events: item.events,
+      bounce_frequency_per_minute:
+        item.totalMinutes > 0 ? Number((item.totalSwitches / item.totalMinutes).toFixed(2)) : 0,
+    }))
+    .sort((a, b) => {
+      if (b.events !== a.events) {
+        return b.events - a.events;
+      }
+      return b.bounce_frequency_per_minute - a.bounce_frequency_per_minute;
+    })
+    .slice(0, 10);
+}
+
+function getPreviousProductiveSession(sessions, timestamp) {
+  let previous = null;
+
+  for (const session of sessions) {
+    const endTime = Number(session.endTime) || 0;
+    if (endTime <= 0 || endTime > timestamp) {
+      continue;
+    }
+
+    const productive =
+      session.productivityHint === "productive" || isProductiveDomain(session.domain);
+    if (!productive) {
+      continue;
+    }
+
+    if (!previous || endTime > previous.endTime) {
+      previous = session;
+    }
+  }
+
+  return previous;
+}
+
+function getNextSessionOnDomain(sessions, domain, timestamp) {
+  let next = null;
+
+  for (const session of sessions) {
+    if (session.domain !== domain) {
+      continue;
+    }
+    const startTime = Number(session.startTime) || 0;
+    if (startTime < timestamp) {
+      continue;
+    }
+    if (!next || startTime < next.startTime) {
+      next = session;
+    }
+  }
+
+  return next;
+}
+
+function getPauseJustificationsForExport(pauses, sessions) {
+  return pauses
+    .filter((pause) => typeof pause.note === "string" && pause.note.trim().length > 0)
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((pause) => {
+      const domain = pause.domain || "unknown";
+      const subsequentSession = getNextSessionOnDomain(sessions, domain, Number(pause.timestamp) || 0);
+      const previousProductive = getPreviousProductiveSession(sessions, Number(pause.timestamp) || 0);
+      const timeSinceLastProductiveMs = previousProductive
+        ? Math.max(0, (Number(pause.timestamp) || 0) - (Number(previousProductive.endTime) || 0))
+        : null;
+
+      return {
+        timestamp: pause.timestamp,
+        domain,
+        justification: pause.note.trim(),
+        subsequent_session_duration_ms: subsequentSession ? Math.max(0, Number(subsequentSession.durationMs) || 0) : 0,
+        subsequent_session_duration_text: subsequentSession
+          ? formatDuration(Math.max(0, Number(subsequentSession.durationMs) || 0))
+          : "0s",
+        time_since_last_productive_session_ms: timeSinceLastProductiveMs,
+        previous_productive_domain: previousProductive?.domain || null,
+        previous_productive_duration_ms: previousProductive
+          ? Math.max(0, Number(previousProductive.durationMs) || 0)
+          : 0,
+        context_summary: previousProductive
+          ? `User was on ${previousProductive.domain} for ${formatDuration(
+              Math.max(0, Number(previousProductive.durationMs) || 0)
+            )}, then paused for ${domain}.`
+          : `No productive session detected before pause on ${domain}.`,
+      };
+    });
+}
+
+function getDeepDiveEventsForExport(studySessions) {
+  const events = [];
+
+  for (const session of studySessions) {
+    const episodes = Array.isArray(session.deepDiveEpisodes) ? session.deepDiveEpisodes : [];
+    if (episodes.length === 0) {
+      continue;
+    }
+
+    const sessionStart = Number(session.startTime) || Number(session.endTime) || Date.now();
+    const date = new Date(sessionStart);
+    const hour = date.getHours();
+
+    for (const episode of episodes) {
+      const durationMs = Math.max(0, Number(episode.durationMs) || 0);
+      if (durationMs <= 0) {
+        continue;
+      }
+
+      events.push({
+        timestamp: sessionStart,
+        duration_ms: durationMs,
+        duration_text: formatDuration(durationMs),
+        label: typeof episode.label === "string" ? episode.label : "Deep Dive",
+        time_of_day: getTimeOfDayLabel(hour),
+        hour,
+      });
+    }
+  }
+
+  return events.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+async function getAiExportData() {
+  const bounds = getLastSevenDaysBounds();
+  const [sessions, thoughtPauses, loopPrompts, studySessions] = await Promise.all([
+    getSessionsInRange(bounds.start, bounds.end),
+    getThoughtPausesInRange(bounds.start, bounds.end),
+    getLoopPromptsInRange(bounds.start, bounds.end),
+    getStudySessionsInRange(bounds.start, bounds.end),
+  ]);
+
+  return {
+    system_persona: "User: Senior Dev, Tech: Java/Go/Scala, Goal: Deep Work.",
+    exported_at: Date.now(),
+    range: {
+      start: bounds.start,
+      end: bounds.end,
+      days: 7,
+    },
+    daily_fragmentation_scores: getDailyFragmentationScoresForExport(sessions, bounds.start, bounds.end),
+    top_loop_pairs: getTopLoopPairsForExport(loopPrompts),
+    pause_justifications: getPauseJustificationsForExport(thoughtPauses, sessions),
+    justification_efficacy: getPauseJustificationsForExport(thoughtPauses, sessions).map((item) => ({
+      timestamp: item.timestamp,
+      domain: item.domain,
+      subsequent_session_duration_ms: item.subsequent_session_duration_ms,
+      time_since_last_productive_session_ms: item.time_since_last_productive_session_ms,
+      previous_productive_domain: item.previous_productive_domain,
+    })),
+    deep_dive_events: getDeepDiveEventsForExport(studySessions),
+  };
+}
+
 function getYesterdayBounds() {
   const now = new Date();
   const end = new Date(now);
@@ -3403,13 +3918,14 @@ function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, b
 
 async function getStats(period) {
   const bounds = getPeriodBounds(period);
-  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral] = await Promise.all([
+  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral, baseline] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
     getStudyModeState(),
     getStudySettings(),
     getBehavioralAnalytics(period, 5),
+    getBaselineStatus(),
   ]);
 
   const domainTotals = new Map();
@@ -3473,6 +3989,7 @@ async function getStats(period) {
     longestNonProductiveSession,
     insights: getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, behavioral, fragmentation }),
     loopPrompts,
+    baseline,
   };
 }
 
@@ -3483,6 +4000,7 @@ async function clearData(period) {
     await clearAllTabEvents();
     await clearAllLoopPrompts();
     await clearAllStudySessions();
+    await clearAllStaccatoBursts();
     await clearActiveSession();
     await clearStudyModeState();
     await chrome.storage.local.remove(ALERT_STATE_KEY);
@@ -3490,6 +4008,7 @@ async function clearData(period) {
     await chrome.storage.local.remove(TAB_EVENT_STATE_KEY);
     await chrome.storage.local.remove(LOOP_STATE_KEY);
     await chrome.storage.local.remove(ACTIVITY_STATE_KEY);
+    await chrome.storage.local.remove(BASELINE_STATE_KEY);
     loopSwitchQueue.length = 0;
     analyticsCache.clear();
     return;
@@ -3501,6 +4020,7 @@ async function clearData(period) {
   await deleteTabEventsInRange(bounds.start, bounds.end);
   await deleteLoopPromptsInRange(bounds.start, bounds.end);
   await deleteStudySessionsInRange(bounds.start, bounds.end);
+  await deleteStaccatoBurstsInRange(bounds.start, bounds.end);
   analyticsCache.clear();
 }
 
@@ -3632,6 +4152,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_STATS") {
     getStats(message.period || "daily")
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "GET_AI_EXPORT") {
+    getAiExportData()
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

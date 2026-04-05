@@ -1,4 +1,6 @@
 const periodSelect = document.getElementById("period");
+const copyAiExportBtn = document.getElementById("copy-ai-export");
+const baselineRemainingEl = document.getElementById("baseline-remaining");
 const totalTimeEl = document.getElementById("total-time");
 const uniqueSitesEl = document.getElementById("unique-sites");
 const maxSiteEl = document.getElementById("max-site");
@@ -59,6 +61,8 @@ let isStatsLoading = false;
 let latestFragmentation = null;
 let latestBehavioral = null;
 let latestStats = null;
+let toastTimer = null;
+let copyButtonResetTimer = null;
 const PRODUCTIVE_DOMAINS = new Set([
   "github.com",
   "notion.so",
@@ -84,6 +88,15 @@ const DISTRACTING_DOMAINS = new Set([
   "linkedin.com",
   "news.ycombinator.com",
 ]);
+const SOCIAL_DOMAINS = new Set([
+  "instagram.com",
+  "reddit.com",
+  "x.com",
+  "twitter.com",
+  "facebook.com",
+  "tiktok.com",
+  "youtube.com",
+]);
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -106,6 +119,60 @@ function sendMessage(message) {
       resolve(response.data);
     });
   });
+}
+
+async function exportDataForAI() {
+  const data = await sendMessage({ type: "GET_AI_EXPORT" });
+  const json = JSON.stringify(data, null, 2);
+  if (!navigator.clipboard?.writeText) {
+    throw new Error("Clipboard API unavailable");
+  }
+  await navigator.clipboard.writeText(json);
+  return data;
+}
+
+function showToast(message, isError = false) {
+  let toast = document.getElementById("dashboard-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "dashboard-toast";
+    toast.className = "dashboard-toast";
+    document.body.appendChild(toast);
+  }
+
+  toast.textContent = message;
+  toast.className = `dashboard-toast ${isError ? "toast-error" : "toast-success"} toast-visible`;
+
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+
+  toastTimer = setTimeout(() => {
+    toast.classList.remove("toast-visible");
+  }, 2400);
+}
+
+function setCopyButtonTemporaryState(label, className = "") {
+  if (!copyAiExportBtn) {
+    return;
+  }
+
+  if (!copyAiExportBtn.dataset.originalText) {
+    copyAiExportBtn.dataset.originalText = copyAiExportBtn.textContent || "Copy Data for AI Analysis";
+  }
+
+  copyAiExportBtn.textContent = label;
+  copyAiExportBtn.classList.toggle("copied-state", className === "copied-state");
+  copyAiExportBtn.classList.toggle("error-state", className === "error-state");
+
+  if (copyButtonResetTimer) {
+    clearTimeout(copyButtonResetTimer);
+  }
+
+  copyButtonResetTimer = setTimeout(() => {
+    copyAiExportBtn.textContent = copyAiExportBtn.dataset.originalText || "Copy Data for AI Analysis";
+    copyAiExportBtn.classList.remove("copied-state", "error-state");
+  }, 2000);
 }
 
 function renderSimpleList(container, rows, rowText) {
@@ -173,7 +240,30 @@ function isDistractingDomain(domain) {
   return domainMatches(domain, DISTRACTING_DOMAINS);
 }
 
-function getFelineState(jitter) {
+function isSocialDomain(domain) {
+  return domainMatches(domain, SOCIAL_DOMAINS);
+}
+
+function getFelineState(jitter, forceJudging = false) {
+  if (forceJudging) {
+    return {
+      title: "System Unstable",
+      text: "Focus fragmented. The cat is not impressed.",
+      svg: `
+        <svg viewBox="0 0 180 120" class="cat-svg" aria-hidden="true">
+          <rect x="34" y="78" width="112" height="20" rx="10" fill="#7f1d1d"/>
+          <ellipse cx="90" cy="58" rx="30" ry="22" fill="#e5e7eb"/>
+          <circle cx="90" cy="34" r="16" fill="#e5e7eb"/>
+          <polygon points="78,24 84,10 89,24" fill="#e5e7eb"/>
+          <polygon points="92,24 98,10 103,24" fill="#e5e7eb"/>
+          <circle cx="84" cy="34" r="2.4" fill="#111827"/>
+          <circle cx="96" cy="34" r="2.4" fill="#111827"/>
+          <path d="M82 42 q8 -4 16 0" stroke="#111827" stroke-width="2" fill="none" stroke-linecap="round"/>
+          <path d="M62 62 q-18 2 -24 16" stroke="#e5e7eb" stroke-width="7" fill="none" stroke-linecap="round"/>
+        </svg>`,
+    };
+  }
+
   if (jitter < 5) {
     return {
       title: "System Stable",
@@ -230,7 +320,10 @@ function renderSystemHealth(health, fragmentation) {
   healthCrashesEl.textContent = String(data.crashes || 0);
   healthJitterEl.textContent = String(jitter);
 
-  const feline = getFelineState(jitter);
+  const archetype = latestStats && latestBehavioral
+    ? getArchetype(latestStats, latestBehavioral, fragmentation || latestStats.fragmentation)
+    : "";
+  const feline = getFelineState(jitter, archetype.startsWith("Dopamine Seeker"));
   felineVisualEl.innerHTML = feline.svg;
   felineTitleEl.textContent = feline.title;
   felineTextEl.textContent = feline.text;
@@ -315,13 +408,64 @@ function classifyBouncePair(pair) {
   return "Context Drift";
 }
 
+function getDomainMix(topSites) {
+  const rows = Array.isArray(topSites) ? topSites : [];
+  let productiveMs = 0;
+  let socialMs = 0;
+  let totalMs = 0;
+
+  for (const site of rows) {
+    const durationMs = Math.max(0, Number(site?.durationMs) || 0);
+    totalMs += durationMs;
+    if (isProductiveDomain(site?.domain)) {
+      productiveMs += durationMs;
+    }
+    if (isSocialDomain(site?.domain)) {
+      socialMs += durationMs;
+    }
+  }
+
+  return {
+    productiveMs,
+    socialMs,
+    totalMs,
+    productiveShare: totalMs > 0 ? productiveMs / totalMs : 0,
+    socialShare: totalMs > 0 ? socialMs / totalMs : 0,
+  };
+}
+
+function getSocialVisitCount(stats, behavioral) {
+  const studyVisits = (stats?.studyMode?.topStudySites || [])
+    .filter((site) => isSocialDomain(site?.domain))
+    .reduce((sum, site) => sum + Math.max(0, Number(site?.visits) || 0), 0);
+
+  const bounceVisits = (behavioral?.topBouncePairs || []).reduce((sum, pair) => {
+    if (isSocialDomain(pair?.from) || isSocialDomain(pair?.to)) {
+      return sum + Math.max(0, Number(pair?.count) || 0);
+    }
+    return sum;
+  }, 0);
+
+  return Math.max(studyVisits, bounceVisits);
+}
+
 function getArchetype(stats, behavioral, fragmentation) {
   const topSite = stats?.topSites?.[0]?.domain;
   const loopCount = behavioral?.rapidLoops?.streakCount || 0;
   const jitter = Number(fragmentation?.focusFragmentIndex) || 0;
+  const mix = getDomainMix(stats?.topSites || []);
+  const topIsSocial = isSocialDomain(topSite);
+  const socialTimeMs = mix.socialMs;
+  const socialVisitCount = getSocialVisitCount(stats, behavioral);
 
-  if (jitter > 20 && loopCount > 0) {
-    return `Scattered Researcher. You put time into ${topSite || "the web"}, but kept breaking your own stack trace.`;
+  if (jitter > 20 && topIsSocial) {
+    return "Context-Switched. Your browser kept snapping back to social surfaces instead of holding a working set.";
+  }
+  if (socialTimeMs > 15 * 60 * 1000 || socialVisitCount > 10) {
+    return "Dopamine Seeker. Social tabs dominated enough of the day to override any polite explanation.";
+  }
+  if (mix.productiveShare >= 0.7 && jitter > 20 && loopCount > 0) {
+    return `Scattered Researcher. Most of your time was on productive domains, but you kept breaking your own stack trace around ${topSite || "the work"}.`;
   }
   if ((stats?.studyMode?.deepDiveCount || 0) > 0 || (stats?.studyMode?.totalDoomscrollTimeMs || 0) > 0) {
     return "Deep Diver. Once you slipped into a scroll surface, your session stopped behaving like deliberate work.";
@@ -338,6 +482,9 @@ function generateBehavioralSummary(stats, behavioral, fragmentation) {
   const topLoopDomains = getTopLoopDomains(behavioral);
   const topPair = behavioral?.topBouncePairs?.[0] || null;
   const longestNonProductive = stats?.longestNonProductiveSession || null;
+  const topSite = stats?.topSites?.[0] || null;
+  const archetype = getArchetype(stats, behavioral, fragmentation);
+  const socialTimeMs = getDomainMix(stats?.topSites || []).socialMs;
   const morningRate = getWindowSwitchRate(behavioral?.switchingTimeline, 9, 13);
   const afternoonRate = getWindowSwitchRate(behavioral?.switchingTimeline, 14, 18);
   const reactiveHour = fragmentation?.mostReactiveHourLabel || "not clear yet";
@@ -345,7 +492,7 @@ function generateBehavioralSummary(stats, behavioral, fragmentation) {
 
   summaryItems.push({
     title: "Behavioral Archetype",
-    detail: getArchetype(stats, behavioral, fragmentation),
+    detail: archetype,
   });
 
   if (jitter > 20 && topLoopDomains.length > 0) {
@@ -374,6 +521,18 @@ function generateBehavioralSummary(stats, behavioral, fragmentation) {
     summaryItems.push({
       title: "Deep Diver",
       detail: "No obvious deep-dive session showed up in the last day. That is one less fire to put out.",
+    });
+  }
+
+  if (topSite?.domain === "x.com" || topSite?.domain === "twitter.com" || topSite?.domain === "instagram.com") {
+    summaryItems.push({
+      title: "Status",
+      detail: `System Hijacked. You are seeking micro-rewards instead of finishing your sprint. ${formatDuration(socialTimeMs)} of potential Deep Work lost.`,
+    });
+  } else if (topSite && isSocialDomain(topSite.domain)) {
+    summaryItems.push({
+      title: "Stack Trace",
+      detail: `Social Leakage: ${topSite.domain} led your time distribution at ${topSite.durationText}. That tab was pulling attention out of the rest of the stack.`,
     });
   }
 
@@ -536,6 +695,20 @@ function renderLoopPromptPanel(loopPrompts) {
   renderSimpleList(loopDomainsEl, data.topDomains || [], (row) => `${row.domain} - ${row.count}`);
 }
 
+function renderBaselineStatus(baseline) {
+  if (!baselineRemainingEl) {
+    return;
+  }
+
+  const data = baseline || {};
+  const daysRemaining = Math.max(0, Number(data.daysRemaining) || 0);
+  const elapsedDays = Math.max(0, Number(data.elapsedDays) || 0);
+  baselineRemainingEl.textContent =
+    daysRemaining > 0
+      ? `${daysRemaining} day${daysRemaining === 1 ? "" : "s"} remaining`
+      : `Baseline complete (${elapsedDays} day${elapsedDays === 1 ? "" : "s"})`;
+}
+
 async function loadStats(options = {}) {
   if (isStatsLoading) {
     return;
@@ -558,6 +731,8 @@ async function loadStats(options = {}) {
       ? `${data.maxWebsite.domain} (${data.maxWebsite.durationText})`
       : "-";
 
+    latestStats = data;
+    latestFragmentation = data.fragmentation || null;
     renderTopSites(data.topSites);
     renderSystemHealth(data.systemHealth, data.fragmentation);
     renderInsights(data.insights);
@@ -565,8 +740,7 @@ async function loadStats(options = {}) {
     renderFragmentation(data.fragmentation);
     renderThoughtPause(data.thoughtPause);
     renderLoopPromptPanel(data.loopPrompts);
-    latestStats = data;
-    latestFragmentation = data.fragmentation || null;
+    renderBaselineStatus(data.baseline);
     refreshBehavioralMirror();
 
     if (!silent) {
@@ -896,6 +1070,23 @@ bounceThresholdEl.addEventListener("change", () => {
 
 clearPeriodBtn.addEventListener("click", () => clearData(periodSelect.value));
 clearAllBtn.addEventListener("click", () => clearData("all"));
+if (copyAiExportBtn) {
+  copyAiExportBtn.addEventListener("click", async (event) => {
+    event.preventDefault();
+    try {
+      setStatus("Preparing AI export...");
+      await exportDataForAI();
+      setStatus("AI export copied.");
+      setCopyButtonTemporaryState("✅ Copied!", "copied-state");
+      showToast("📁 Baseline Data Copied! Ready for AI Audit.");
+    } catch (error) {
+      console.error("Copy Data for AI Analysis failed", error);
+      setStatus(error.message, true);
+      setCopyButtonTemporaryState("❌ Copy Failed", "error-state");
+      showToast("❌ Copy Failed. Check DevTools.", true);
+    }
+  });
+}
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadStats();

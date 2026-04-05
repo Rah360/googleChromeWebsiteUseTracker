@@ -35,8 +35,25 @@ h3 {
 .controls {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  gap: 10px;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.baseline-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #14532d;
+  border-radius: 8px;
+  background: rgba(3, 19, 15, 0.88);
+}
+
+.baseline-chip strong {
+  color: #86efac;
+  font-size: 0.85rem;
 }
 
 select,
@@ -47,6 +64,63 @@ button {
   background: #03130f;
   color: #d1fae5;
   font-size: 0.85rem;
+}
+
+button {
+  cursor: pointer;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+
+#copy-ai-export {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
+#copy-ai-export.copied-state {
+  border-color: #22c55e;
+  color: #bbf7d0;
+  background: #052e16;
+}
+
+#copy-ai-export.error-state {
+  border-color: #dc2626;
+  color: #fecaca;
+  background: #450a0a;
+}
+
+.dashboard-toast {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #14532d;
+  background: rgba(3, 19, 15, 0.96);
+  color: #d1fae5;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.dashboard-toast.toast-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.dashboard-toast.toast-success {
+  border-color: #166534;
+  color: #bbf7d0;
+}
+
+.dashboard-toast.toast-error {
+  border-color: #dc2626;
+  color: #fecaca;
 }
 
 .system-health {
