@@ -9,8 +9,10 @@ const studySessionCountEl = document.getElementById("study-session-count");
 const studyDistractingTimeEl = document.getElementById("study-distracting-time");
 const studyFocusRatioEl = document.getElementById("study-focus-ratio");
 const studySwitchCountEl = document.getElementById("study-switch-count");
+const studyDoomscrollTimeEl = document.getElementById("study-doomscroll-time");
 const studyTopSitesEl = document.getElementById("study-top-sites");
 const studyDistractionsEl = document.getElementById("study-distractions");
+const studyDoomscrollSurfacesEl = document.getElementById("study-doomscroll-surfaces");
 const studyRecentSessionsEl = document.getElementById("study-recent-sessions");
 
 const tpTodayEl = document.getElementById("tp-today");
@@ -90,14 +92,14 @@ function renderStudySessionTable(rows) {
   studyRecentSessionsEl.innerHTML = "";
   if (!rows || rows.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = "<td colspan='3'>No study sessions for this period.</td>";
+    tr.innerHTML = "<td colspan='4'>No study sessions for this period.</td>";
     studyRecentSessionsEl.appendChild(tr);
     return;
   }
 
   for (const row of rows) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${row.durationText}</td><td>${row.uniqueSites}</td><td>${row.distractingTimeText}</td>`;
+    tr.innerHTML = `<td>${row.durationText}</td><td>${row.uniqueSites}</td><td>${row.distractingTimeText}</td><td>${row.doomscrollTimeText}</td>`;
     studyRecentSessionsEl.appendChild(tr);
   }
 }
@@ -112,12 +114,14 @@ function renderStudyMode(studyMode, studyStatus) {
   studyDistractingTimeEl.textContent = data.totalDistractingTimeText || "0s";
   studyFocusRatioEl.textContent = `${Number(data.focusRatio) || 0}%`;
   studySwitchCountEl.textContent = String(data.totalSwitches || 0);
+  studyDoomscrollTimeEl.textContent = data.totalDoomscrollTimeText || "0s";
 
   renderSimpleList(studyTopSitesEl, data.topStudySites || [], (row) => {
     const visitsText = row.visits === 1 ? "1 visit" : `${row.visits} visits`;
     return `${row.domain} - ${row.durationText} (${visitsText})`;
   });
   renderSimpleList(studyDistractionsEl, data.distractingSites || [], (row) => `${row.domain} - ${row.durationText}`);
+  renderSimpleList(studyDoomscrollSurfacesEl, data.doomscrollSurfaces || [], (row) => `${row.label} - ${row.durationText}`);
   renderStudySessionTable(data.recentSessions || []);
 }
 

@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Thought Pause Settings</title>
+    <title>Extension Settings</title>
     <link rel="stylesheet" href="options.css" />
   </head>
   <body>
     <main class="options-app">
-      <h1>Thought Pause Settings</h1>
+      <h1>Extension Settings</h1>
 
       <section class="card">
         <label><input id="enabled" type="checkbox" /> Enable Thought Pause</label>
@@ -60,6 +60,16 @@
         <label>Min switches <input id="loop-min-switches" type="number" min="2" /></label>
         <label>Max unique domains <input id="loop-max-domains" type="number" min="2" max="6" /></label>
         <label>Cooldown minutes <input id="loop-cooldown-minutes" type="number" min="1" /></label>
+      </section>
+
+      <section class="card">
+        <h2>Study Mode Distracting Sites</h2>
+        <p>Domains here are treated as distracting during Study Mode.</p>
+        <label for="study-distracting-domains">Distracting domains (comma/newline separated)</label>
+        <textarea id="study-distracting-domains" rows="5"></textarea>
+        <label for="study-distracting-patterns">Distracting URL patterns (supports *)</label>
+        <textarea id="study-distracting-patterns" rows="5"></textarea>
+        <p>Example: <code>https://www.youtube.com/shorts/*</code></p>
       </section>
 
       <section class="actions">

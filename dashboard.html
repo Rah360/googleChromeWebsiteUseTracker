@@ -69,6 +69,10 @@
             <h3>Switches During Study</h3>
             <p id="study-switch-count">0</p>
           </article>
+          <article class="card">
+            <h3>Doomscroll Time</h3>
+            <p id="study-doomscroll-time">0s</p>
+          </article>
         </div>
         <div class="thought-grid">
           <article class="top-sites">
@@ -81,6 +85,13 @@
           </article>
         </div>
         <article class="top-sites">
+          <h3>Doomscroll Surfaces</h3>
+          <p class="chart-help">
+            Short-form or scroll-heavy surfaces detected during Study Mode, such as YouTube Shorts and Instagram Reels.
+          </p>
+          <ol id="study-doomscroll-surfaces"></ol>
+        </article>
+        <article class="top-sites">
           <h3>Recent Study Sessions</h3>
           <table class="tp-table">
             <thead>
@@ -88,6 +99,7 @@
                 <th>Study Time</th>
                 <th>Sites</th>
                 <th>Distracting Time</th>
+                <th>Doomscroll Time</th>
               </tr>
             </thead>
             <tbody id="study-recent-sessions"></tbody>

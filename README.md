@@ -38,7 +38,8 @@ Tracks active website usage time in Chrome and stores sessions in IndexedDB.
   - Manual start/stop focus sessions from the popup.
   - Tracks active-tab study time while the mode is on.
   - Records which websites were visited during that session and how often.
-  - Separates time spent on common distracting domains such as Instagram, Reddit, X/Twitter, Facebook, and TikTok.
+  - Lets you configure distracting domains and URL patterns, such as `https://www.youtube.com/shorts/*`.
+  - Separates time spent on distracting sites and short-form doomscroll surfaces like YouTube Shorts and Instagram Reels.
 - Shows:
   - Total tracked time
   - Number of unique websites used
@@ -114,9 +115,11 @@ Tracks active website usage time in Chrome and stores sessions in IndexedDB.
   - `durationMs`
   - `activeStudyTimeMs`
   - `distractionTimeMs`
+  - `doomscrollTimeMs`
   - `focusTimeMs`
   - `focusRatio`
   - `uniqueSites`
   - `totalSwitches`
   - `sites` (per-domain duration and visit count)
   - `distractingSites`
+  - `doomscrollSurfaces`

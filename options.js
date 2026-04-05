@@ -24,6 +24,8 @@ const els = {
   loopMinSwitches: document.getElementById("loop-min-switches"),
   loopMaxDomains: document.getElementById("loop-max-domains"),
   loopCooldownMinutes: document.getElementById("loop-cooldown-minutes"),
+  studyDistractingDomains: document.getElementById("study-distracting-domains"),
+  studyDistractingPatterns: document.getElementById("study-distracting-patterns"),
   save: document.getElementById("save"),
   reset: document.getElementById("reset"),
   status: document.getElementById("status"),
@@ -52,7 +54,7 @@ function sendMessage(message) {
   });
 }
 
-function renderSettings(settings, loopSettings) {
+function renderSettings(settings, loopSettings, studySettings) {
   els.enabled.checked = settings.enabled;
   els.strictMode.checked = settings.strictMode;
   els.allowNote.checked = settings.allowNote;
@@ -88,6 +90,9 @@ function renderSettings(settings, loopSettings) {
   els.loopMinSwitches.value = String(loopSettings.minSwitches);
   els.loopMaxDomains.value = String(loopSettings.maxUniqueDomains);
   els.loopCooldownMinutes.value = String(loopSettings.cooldownMinutes);
+
+  els.studyDistractingDomains.value = (studySettings?.distractingDomains || []).join("\n");
+  els.studyDistractingPatterns.value = (studySettings?.distractingUrlPatterns || []).join("\n");
 }
 
 function collectSettings() {
@@ -134,14 +139,28 @@ function collectLoopSettings() {
   };
 }
 
+function collectStudySettings() {
+  return {
+    distractingDomains: els.studyDistractingDomains.value
+      .split(/[,\n]/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    distractingUrlPatterns: els.studyDistractingPatterns.value
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  };
+}
+
 async function loadSettings() {
   try {
     setStatus("Loading...");
-    const [data, loopData] = await Promise.all([
+    const [data, loopData, studyData] = await Promise.all([
       sendMessage({ type: "GET_THOUGHT_PAUSE_SETTINGS" }),
       sendMessage({ type: "GET_LOOP_SETTINGS" }),
+      sendMessage({ type: "GET_STUDY_SETTINGS" }),
     ]);
-    renderSettings(data, loopData);
+    renderSettings(data, loopData, studyData);
     setStatus("Loaded");
   } catch (error) {
     setStatus(error.message, true);
@@ -153,9 +172,11 @@ async function saveSettings() {
     setStatus("Saving...");
     const settings = collectSettings();
     const loopSettings = collectLoopSettings();
+    const studySettings = collectStudySettings();
     await Promise.all([
       sendMessage({ type: "SAVE_THOUGHT_PAUSE_SETTINGS", settings }),
       sendMessage({ type: "SAVE_LOOP_SETTINGS", settings: loopSettings }),
+      sendMessage({ type: "SAVE_STUDY_SETTINGS", settings: studySettings }),
     ]);
     setStatus("Saved");
   } catch (error) {
@@ -169,11 +190,12 @@ async function resetToDefaults() {
       return;
     }
     setStatus("Resetting...");
-    const [data, loopData] = await Promise.all([
+    const [data, loopData, studyData] = await Promise.all([
       sendMessage({ type: "RESET_THOUGHT_PAUSE_SETTINGS" }),
       sendMessage({ type: "RESET_LOOP_SETTINGS" }),
+      sendMessage({ type: "RESET_STUDY_SETTINGS" }),
     ]);
-    renderSettings(data, loopData);
+    renderSettings(data, loopData, studyData);
     setStatus("Reset to defaults.");
   } catch (error) {
     setStatus(error.message, true);

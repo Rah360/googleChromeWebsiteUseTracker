@@ -14,6 +14,7 @@ const TAB_EVENT_STATE_KEY = "tabEventState";
 const LOOP_SETTINGS_KEY = "revisitLoopSettings";
 const LOOP_STATE_KEY = "revisitLoopState";
 const STUDY_MODE_KEY = "studyModeState";
+const STUDY_SETTINGS_KEY = "studyModeSettings";
 
 const HEARTBEAT_ALARM = "trackingHeartbeat";
 const RETENTION_ALARM = "retentionCleanup";
@@ -37,7 +38,47 @@ const DEFAULT_DISTRACTION_DOMAINS = [
   "twitter.com",
   "facebook.com",
   "tiktok.com",
+  "hotstar.com",
+  "epicsports.me",
+  "linkedin.com",
+  "news.ycombinator.com",
 ];
+
+const DEFAULT_STUDY_SETTINGS = {
+  distractingDomains: cloneDefaultDistractionDomains(),
+  distractingUrlPatterns: [
+    "https://www.youtube.com/shorts/*",
+    "https://youtube.com/shorts/*",
+    "https://www.instagram.com/reel/*",
+    "https://instagram.com/reel/*",
+    "https://www.instagram.com/reels/*",
+    "https://instagram.com/reels/*",
+  ],
+};
+
+const DOOMSCROLL_SURFACES = [
+  {
+    label: "YouTube Shorts",
+    patterns: ["https://www.youtube.com/shorts/*", "https://youtube.com/shorts/*"],
+  },
+  {
+    label: "Instagram Reels",
+    patterns: [
+      "https://www.instagram.com/reel/*",
+      "https://instagram.com/reel/*",
+      "https://www.instagram.com/reels/*",
+      "https://instagram.com/reels/*",
+    ],
+  },
+  {
+    label: "TikTok",
+    domains: ["tiktok.com"],
+  },
+];
+
+function cloneDefaultDistractionDomains() {
+  return [...DEFAULT_DISTRACTION_DOMAINS];
+}
 
 const loopSwitchQueue = [];
 const REQUIRED_DB_STORES = [
@@ -800,6 +841,51 @@ function sanitizeLoopSettings(input) {
   return settings;
 }
 
+function normalizeStudyPattern(pattern) {
+  const value = String(pattern || "").trim().toLowerCase();
+  return value || null;
+}
+
+function wildcardToRegExp(pattern) {
+  const escaped = pattern.replace(/[|\\{}()[\]^$+?.]/g, "\\$&").replace(/\*/g, ".*");
+  return new RegExp(`^${escaped}$`, "i");
+}
+
+function urlMatchesPattern(url, pattern) {
+  if (!url || !pattern) {
+    return false;
+  }
+
+  try {
+    return wildcardToRegExp(pattern).test(String(url).toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+function sanitizeStudySettings(input) {
+  const settings = clone(DEFAULT_STUDY_SETTINGS);
+  if (!input || typeof input !== "object") {
+    return settings;
+  }
+
+  settings.distractingDomains = Array.isArray(input.distractingDomains)
+    ? [
+        ...new Set(
+          input.distractingDomains
+            .map((item) => normalizeDomain(`https://${item}`) || normalizeDomain(item))
+            .filter(Boolean)
+        ),
+      ]
+    : settings.distractingDomains;
+
+  settings.distractingUrlPatterns = Array.isArray(input.distractingUrlPatterns)
+    ? [...new Set(input.distractingUrlPatterns.map(normalizeStudyPattern).filter(Boolean))]
+    : settings.distractingUrlPatterns;
+
+  return settings;
+}
+
 async function getThoughtPauseSettings() {
   const data = await chrome.storage.local.get(THOUGHT_PAUSE_SETTINGS_KEY);
   return sanitizeThoughtPauseSettings(data[THOUGHT_PAUSE_SETTINGS_KEY]);
@@ -819,6 +905,17 @@ async function getLoopSettings() {
 async function setLoopSettings(settings) {
   const normalized = sanitizeLoopSettings(settings);
   await chrome.storage.local.set({ [LOOP_SETTINGS_KEY]: normalized });
+  return normalized;
+}
+
+async function getStudySettings() {
+  const data = await chrome.storage.local.get(STUDY_SETTINGS_KEY);
+  return sanitizeStudySettings(data[STUDY_SETTINGS_KEY]);
+}
+
+async function setStudySettings(settings) {
+  const normalized = sanitizeStudySettings(settings);
+  await chrome.storage.local.set({ [STUDY_SETTINGS_KEY]: normalized });
   return normalized;
 }
 
@@ -859,8 +956,10 @@ function createEmptyStudyModeState(now = Date.now()) {
     lastSeenTime: null,
     totalActiveMs: 0,
     totalDistractingMs: 0,
+    totalDoomscrollMs: 0,
     totalSwitches: 0,
     siteStats: {},
+    doomscrollBySurface: {},
     lastUpdatedAt: now,
   };
 }
@@ -881,6 +980,7 @@ function normalizeStudySiteStats(input) {
       visits: Math.max(0, Number(raw?.visits) || 0),
       durationMs: Math.max(0, Number(raw?.durationMs) || 0),
       isDistracting: Boolean(raw?.isDistracting),
+      doomscrollMs: Math.max(0, Number(raw?.doomscrollMs) || 0),
       lastUrl: typeof raw?.lastUrl === "string" ? raw.lastUrl : null,
     };
   }
@@ -897,10 +997,36 @@ function sortStudySites(siteStats) {
     }));
 }
 
-function isDistractingDomain(domain) {
-  return DEFAULT_DISTRACTION_DOMAINS.some(
-    (item) => domain === item || domain.endsWith(`.${item}`)
+function domainMatchesList(domain, domains) {
+  return domains.some((item) => domain === item || domain.endsWith(`.${item}`));
+}
+
+function getDoomscrollSurface(domain, url) {
+  for (const surface of DOOMSCROLL_SURFACES) {
+    if (Array.isArray(surface.domains) && domainMatchesList(domain, surface.domains)) {
+      return surface.label;
+    }
+
+    if (Array.isArray(surface.patterns) && surface.patterns.some((pattern) => urlMatchesPattern(url, pattern))) {
+      return surface.label;
+    }
+  }
+
+  return null;
+}
+
+function classifyStudyVisit(domain, url, settings) {
+  const studySettings = settings || DEFAULT_STUDY_SETTINGS;
+  const domainMatch = domainMatchesList(domain, studySettings.distractingDomains || []);
+  const patternMatch = (studySettings.distractingUrlPatterns || []).some((pattern) =>
+    urlMatchesPattern(url, pattern)
   );
+  const doomscrollSurface = getDoomscrollSurface(domain, url);
+
+  return {
+    isDistracting: domainMatch || patternMatch || Boolean(doomscrollSurface),
+    doomscrollSurface,
+  };
 }
 
 async function getStudyModeState() {
@@ -919,8 +1045,12 @@ async function getStudyModeState() {
     lastSeenTime: Number.isFinite(raw.lastSeenTime) ? raw.lastSeenTime : null,
     totalActiveMs: Math.max(0, Number(raw.totalActiveMs) || 0),
     totalDistractingMs: Math.max(0, Number(raw.totalDistractingMs) || 0),
+    totalDoomscrollMs: Math.max(0, Number(raw.totalDoomscrollMs) || 0),
     totalSwitches: Math.max(0, Number(raw.totalSwitches) || 0),
     siteStats: normalizeStudySiteStats(raw.siteStats),
+    doomscrollBySurface: raw.doomscrollBySurface && typeof raw.doomscrollBySurface === "object"
+      ? raw.doomscrollBySurface
+      : {},
     lastUpdatedAt: Number.isFinite(raw.lastUpdatedAt) ? raw.lastUpdatedAt : Date.now(),
   };
 }
@@ -1045,21 +1175,25 @@ async function clearActiveSession() {
   await chrome.storage.local.remove(ACTIVE_SESSION_KEY);
 }
 
-function ensureStudySite(state, domain, url = null) {
+function ensureStudySite(state, domain, url = null, studySettings = DEFAULT_STUDY_SETTINGS) {
   if (!domain) {
     return null;
   }
+
+  const classification = classifyStudyVisit(domain, url, studySettings);
 
   if (!state.siteStats[domain]) {
     state.siteStats[domain] = {
       domain,
       visits: 0,
       durationMs: 0,
-      isDistracting: isDistractingDomain(domain),
+      isDistracting: classification.isDistracting,
+      doomscrollMs: 0,
       lastUrl: null,
     };
   }
 
+  state.siteStats[domain].isDistracting = classification.isDistracting;
   if (url) {
     state.siteStats[domain].lastUrl = url;
   }
@@ -1067,7 +1201,7 @@ function ensureStudySite(state, domain, url = null) {
   return state.siteStats[domain];
 }
 
-function applyStudyChunkToState(state, now = Date.now()) {
+function applyStudyChunkToState(state, studySettings = DEFAULT_STUDY_SETTINGS, now = Date.now()) {
   if (!state.active || !state.currentDomain || !state.chunkStartTime) {
     state.lastUpdatedAt = now;
     return 0;
@@ -1083,11 +1217,18 @@ function applyStudyChunkToState(state, now = Date.now()) {
     return 0;
   }
 
-  const site = ensureStudySite(state, state.currentDomain, state.currentUrl);
+  const classification = classifyStudyVisit(state.currentDomain, state.currentUrl, studySettings);
+  const site = ensureStudySite(state, state.currentDomain, state.currentUrl, studySettings);
   site.durationMs += durationMs;
   state.totalActiveMs += durationMs;
-  if (site.isDistracting) {
+  if (classification.isDistracting) {
     state.totalDistractingMs += durationMs;
+  }
+  if (classification.doomscrollSurface) {
+    site.doomscrollMs += durationMs;
+    state.totalDoomscrollMs += durationMs;
+    state.doomscrollBySurface[classification.doomscrollSurface] =
+      (state.doomscrollBySurface[classification.doomscrollSurface] || 0) + durationMs;
   }
 
   state.chunkStartTime = now;
@@ -1111,29 +1252,38 @@ function createStudySessionRecord(state, endTime = Date.now()) {
     durationMs: Math.max(0, endTime - (state.startedAt || endTime)),
     activeStudyTimeMs: state.totalActiveMs,
     distractionTimeMs: state.totalDistractingMs,
+    doomscrollTimeMs: state.totalDoomscrollMs,
     focusTimeMs,
     focusRatio,
     uniqueSites,
     totalSwitches: state.totalSwitches || 0,
     sites,
     distractingSites,
+    doomscrollSurfaces: Object.entries(state.doomscrollBySurface || {})
+      .map(([label, durationMs]) => ({
+        label,
+        durationMs,
+        durationText: formatDuration(durationMs),
+      }))
+      .sort((a, b) => b.durationMs - a.durationMs),
   };
 }
 
-function getStudyModeSnapshot(state) {
+function getStudyModeSnapshot(state, studySettings = DEFAULT_STUDY_SETTINGS) {
   const now = Date.now();
   const snapshot = clone(state);
-  applyStudyChunkToState(snapshot, now);
+  applyStudyChunkToState(snapshot, studySettings, now);
   return createStudySessionRecord(snapshot, now);
 }
 
 async function startStudyMode() {
   const now = Date.now();
   const existing = await getStudyModeState();
+  const studySettings = await getStudySettings();
   if (existing.active) {
     return {
       active: true,
-      session: getStudyModeSnapshot(existing),
+      session: getStudyModeSnapshot(existing, studySettings),
     };
   }
 
@@ -1148,19 +1298,20 @@ async function startStudyMode() {
   state.lastSeenTime = domain ? now : null;
 
   if (domain) {
-    const site = ensureStudySite(state, domain, tab?.url || null);
+    const site = ensureStudySite(state, domain, tab?.url || null, studySettings);
     site.visits = 1;
   }
 
   await setStudyModeState(state);
   return {
     active: true,
-    session: getStudyModeSnapshot(state),
+    session: getStudyModeSnapshot(state, studySettings),
   };
 }
 
 async function stopStudyMode() {
   const state = await getStudyModeState();
+  const studySettings = await getStudySettings();
   if (!state.active || !state.startedAt) {
     return {
       active: false,
@@ -1170,7 +1321,7 @@ async function stopStudyMode() {
 
   const now = Date.now();
   const finalState = clone(state);
-  applyStudyChunkToState(finalState, now);
+  applyStudyChunkToState(finalState, studySettings, now);
   const session = createStudySessionRecord(finalState, now);
 
   if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
@@ -1188,6 +1339,7 @@ async function stopStudyMode() {
 
 async function syncStudyMode(domain, url, reason = "sync") {
   const state = await getStudyModeState();
+  const studySettings = await getStudySettings();
   if (!state.active || !state.startedAt) {
     return null;
   }
@@ -1197,17 +1349,17 @@ async function syncStudyMode(domain, url, reason = "sync") {
   const nextUrl = url || null;
 
   if (!nextDomain) {
-    applyStudyChunkToState(state, now);
+    applyStudyChunkToState(state, studySettings, now);
     state.currentDomain = null;
     state.currentUrl = null;
     state.chunkStartTime = null;
     state.lastSeenTime = null;
     await setStudyModeState(state);
-    return getStudyModeSnapshot(state);
+    return getStudyModeSnapshot(state, studySettings);
   }
 
   if (!state.currentDomain) {
-    const site = ensureStudySite(state, nextDomain, nextUrl);
+    const site = ensureStudySite(state, nextDomain, nextUrl, studySettings);
     if (site.visits === 0) {
       site.visits = 1;
     }
@@ -1217,24 +1369,24 @@ async function syncStudyMode(domain, url, reason = "sync") {
     state.lastSeenTime = now;
     state.lastUpdatedAt = now;
     await setStudyModeState(state);
-    return getStudyModeSnapshot(state);
+    return getStudyModeSnapshot(state, studySettings);
   }
 
   if (state.currentDomain === nextDomain) {
     if (reason === "heartbeat") {
-      applyStudyChunkToState(state, now);
+      applyStudyChunkToState(state, studySettings, now);
     } else {
       state.currentUrl = nextUrl;
       state.lastSeenTime = now;
       state.lastUpdatedAt = now;
     }
     await setStudyModeState(state);
-    return getStudyModeSnapshot(state);
+    return getStudyModeSnapshot(state, studySettings);
   }
 
-  applyStudyChunkToState(state, now);
+  applyStudyChunkToState(state, studySettings, now);
   state.totalSwitches += 1;
-  const site = ensureStudySite(state, nextDomain, nextUrl);
+  const site = ensureStudySite(state, nextDomain, nextUrl, studySettings);
   site.visits += 1;
   state.currentDomain = nextDomain;
   state.currentUrl = nextUrl;
@@ -1242,7 +1394,7 @@ async function syncStudyMode(domain, url, reason = "sync") {
   state.lastSeenTime = now;
   state.lastUpdatedAt = now;
   await setStudyModeState(state);
-  return getStudyModeSnapshot(state);
+  return getStudyModeSnapshot(state, studySettings);
 }
 
 async function commitActiveSession(reason = "switch") {
@@ -2054,7 +2206,12 @@ function getThoughtPauseAnalytics(pauses, sessions) {
   };
 }
 
-function getStudyModeAnalytics(sessions, activeState = null, bounds = null) {
+function getStudyModeAnalytics(
+  sessions,
+  activeState = null,
+  bounds = null,
+  studySettings = DEFAULT_STUDY_SETTINGS
+) {
   const sourceSessions = [...sessions];
   if (
     activeState &&
@@ -2062,41 +2219,59 @@ function getStudyModeAnalytics(sessions, activeState = null, bounds = null) {
     activeState.startedAt &&
     (!bounds || activeState.startedAt >= bounds.start)
   ) {
-    sourceSessions.push(getStudyModeSnapshot(activeState));
+    sourceSessions.push(getStudyModeSnapshot(activeState, studySettings));
   }
 
   let totalStudyTimeMs = 0;
   let totalDistractingTimeMs = 0;
+  let totalDoomscrollMs = 0;
   let totalSessions = 0;
   let totalSwitches = 0;
   const siteMap = new Map();
   const distractionMap = new Map();
+  const doomscrollMap = new Map();
   const recentSessions = [];
 
   for (const session of sourceSessions) {
     totalSessions += 1;
     totalStudyTimeMs += Math.max(0, Number(session.activeStudyTimeMs) || 0);
     totalDistractingTimeMs += Math.max(0, Number(session.distractionTimeMs) || 0);
+    totalDoomscrollMs += Math.max(0, Number(session.doomscrollTimeMs) || 0);
     totalSwitches += Math.max(0, Number(session.totalSwitches) || 0);
 
     const sites = Array.isArray(session.sites) ? session.sites : [];
     for (const site of sites) {
+      const siteIsDistracting = classifyStudyVisit(
+        site.domain,
+        site.lastUrl || null,
+        studySettings
+      ).isDistracting;
       const current = siteMap.get(site.domain) || {
         domain: site.domain,
         durationMs: 0,
         visits: 0,
         sessions: 0,
-        isDistracting: Boolean(site.isDistracting),
+        isDistracting: siteIsDistracting,
+        doomscrollMs: 0,
       };
       current.durationMs += Math.max(0, Number(site.durationMs) || 0);
       current.visits += Math.max(0, Number(site.visits) || 0);
       current.sessions += 1;
-      current.isDistracting = current.isDistracting || Boolean(site.isDistracting);
+      current.isDistracting = current.isDistracting || siteIsDistracting;
+      current.doomscrollMs += Math.max(0, Number(site.doomscrollMs) || 0);
       siteMap.set(site.domain, current);
 
-      if (site.isDistracting) {
+      if (siteIsDistracting) {
         distractionMap.set(site.domain, (distractionMap.get(site.domain) || 0) + (Number(site.durationMs) || 0));
       }
+    }
+
+    const doomscrollSurfaces = Array.isArray(session.doomscrollSurfaces) ? session.doomscrollSurfaces : [];
+    for (const surface of doomscrollSurfaces) {
+      doomscrollMap.set(
+        surface.label,
+        (doomscrollMap.get(surface.label) || 0) + Math.max(0, Number(surface.durationMs) || 0)
+      );
     }
 
     recentSessions.push({
@@ -2106,12 +2281,14 @@ function getStudyModeAnalytics(sessions, activeState = null, bounds = null) {
       durationText: formatDuration(Math.max(0, Number(session.activeStudyTimeMs) || 0)),
       uniqueSites: Math.max(0, Number(session.uniqueSites) || 0),
       distractingTimeText: formatDuration(Math.max(0, Number(session.distractionTimeMs) || 0)),
+      doomscrollTimeText: formatDuration(Math.max(0, Number(session.doomscrollTimeMs) || 0)),
     });
   }
 
   const focusTimeMs = Math.max(0, totalStudyTimeMs - totalDistractingTimeMs);
   const focusRatio = totalStudyTimeMs > 0 ? Math.round((focusTimeMs / totalStudyTimeMs) * 100) : 0;
   const topStudySites = [...siteMap.values()]
+    .filter((site) => !site.isDistracting)
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 10)
     .map((site) => ({
@@ -2128,6 +2305,15 @@ function getStudyModeAnalytics(sessions, activeState = null, bounds = null) {
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 5);
 
+  const doomscrollSurfaces = [...doomscrollMap.entries()]
+    .map(([label, durationMs]) => ({
+      label,
+      durationMs,
+      durationText: formatDuration(durationMs),
+    }))
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 5);
+
   recentSessions.sort((a, b) => b.startTime - a.startTime);
 
   return {
@@ -2136,11 +2322,14 @@ function getStudyModeAnalytics(sessions, activeState = null, bounds = null) {
     totalStudyTimeText: formatDuration(totalStudyTimeMs),
     totalDistractingTimeMs,
     totalDistractingTimeText: formatDuration(totalDistractingTimeMs),
+    totalDoomscrollTimeMs: totalDoomscrollMs,
+    totalDoomscrollTimeText: formatDuration(totalDoomscrollMs),
     focusRatio,
     focusTimeText: formatDuration(focusTimeMs),
     totalSwitches,
     topStudySites,
     distractingSites,
+    doomscrollSurfaces,
     recentSessions: recentSessions.slice(0, 5),
   };
 }
@@ -2377,11 +2566,12 @@ async function getLoopPromptSummary(nowMs = Date.now()) {
 
 async function getStats(period) {
   const bounds = getPeriodBounds(period);
-  const [sessions, pauses, studySessions, activeStudyState] = await Promise.all([
+  const [sessions, pauses, studySessions, activeStudyState, studySettings] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
     getStudyModeState(),
+    getStudySettings(),
   ]);
 
   const domainTotals = new Map();
@@ -2404,13 +2594,13 @@ async function getStats(period) {
     getThoughtPausesInRange(weekBounds.start, weekBounds.end),
   ]);
   const loopPrompts = await getLoopPromptSummary();
-  const studyMode = getStudyModeAnalytics(studySessions, activeStudyState, bounds);
+  const studyMode = getStudyModeAnalytics(studySessions, activeStudyState, bounds, studySettings);
   const studyStatus = activeStudyState.active
     ? {
         active: true,
         currentDomain: activeStudyState.currentDomain,
         startedAt: activeStudyState.startedAt,
-        currentSession: getStudyModeSnapshot(activeStudyState),
+        currentSession: getStudyModeSnapshot(activeStudyState, studySettings),
       }
     : {
         active: false,
@@ -2561,8 +2751,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "GET_TRACKING_STATUS") {
-    Promise.all([getActiveSession(), getStudyModeState()])
-      .then(([active, studyMode]) =>
+    Promise.all([getActiveSession(), getStudyModeState(), getStudySettings()])
+      .then(([active, studyMode, studySettings]) =>
         sendResponse({
           ok: true,
           data: {
@@ -2573,7 +2763,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
                   active: true,
                   startedAt: studyMode.startedAt,
                   currentDomain: studyMode.currentDomain,
-                  session: getStudyModeSnapshot(studyMode),
+                  session: getStudyModeSnapshot(studyMode, studySettings),
                 }
               : {
                   active: false,
@@ -2639,6 +2829,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "GET_STUDY_SETTINGS") {
+    getStudySettings()
+      .then((settings) => sendResponse({ ok: true, data: settings }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type === "SAVE_LOOP_SETTINGS") {
     setLoopSettings(message.settings)
       .then((settings) => sendResponse({ ok: true, data: settings }))
@@ -2646,8 +2843,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "SAVE_STUDY_SETTINGS") {
+    setStudySettings(message.settings)
+      .then((settings) => sendResponse({ ok: true, data: settings }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   if (message.type === "RESET_LOOP_SETTINGS") {
     setLoopSettings(DEFAULT_LOOP_SETTINGS)
+      .then((settings) => sendResponse({ ok: true, data: settings }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "RESET_STUDY_SETTINGS") {
+    setStudySettings(DEFAULT_STUDY_SETTINGS)
       .then((settings) => sendResponse({ ok: true, data: settings }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
