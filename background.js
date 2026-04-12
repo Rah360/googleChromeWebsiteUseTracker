@@ -1,11 +1,12 @@
 const DB_NAME = "websiteUseTracker";
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const SESSION_STORE = "sessions";
 const THOUGHT_PAUSE_STORE = "thought_pauses";
 const TAB_EVENT_STORE = "tab_events";
 const LOOP_PROMPT_STORE = "loop_prompts";
 const STUDY_SESSION_STORE = "study_sessions";
 const STACCATO_BURST_STORE = "staccato_bursts";
+const REPORT_LOG_STORE = "system_reports";
 
 const ACTIVE_SESSION_KEY = "activeSession";
 const ALERT_STATE_KEY = "alertState";
@@ -18,10 +19,12 @@ const STUDY_MODE_KEY = "studyModeState";
 const STUDY_SETTINGS_KEY = "studyModeSettings";
 const ACTIVITY_STATE_KEY = "activityState";
 const BASELINE_STATE_KEY = "baselineObservationState";
+const HARD_LOCK_STATE_KEY = "hardLockState";
 
 const HEARTBEAT_ALARM = "trackingHeartbeat";
 const RETENTION_ALARM = "retentionCleanup";
 const DAILY_REPORT_ALARM = "dailySystemReport";
+const DAILY_REPORT_NOTIFICATION_ID = "9am-report";
 
 const HEARTBEAT_MINUTES = 1;
 const MAX_SESSION_MS = 10 * 60 * 1000;
@@ -46,7 +49,9 @@ const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 const BASELINE_DAYS = 7;
 const STACCATO_MAX_STAY_MS = 120 * 1000;
 const STACCATO_RETURN_WINDOW_MS = 5 * 60 * 1000;
+const DOMAIN_HARD_LOCK_MS = 60 * 1000;
 const PRODUCTIVE_DOMAINS = [
+  "localhost",
   "github.com",
   "notion.so",
   "gemini.google.com",
@@ -57,6 +62,17 @@ const PRODUCTIVE_DOMAINS = [
   "kubernetes.io",
   "stackoverflow.com",
   "cscsepic.blogspot.com",
+];
+const ACTIVE_BUILDING_DOMAINS = ["localhost", "github.com", "stackoverflow.com"];
+const INTERVIEW_PREP_DOMAINS = ["leetcode.com"];
+const DOPAMINE_DOMAINS = [
+  "instagram.com",
+  "reddit.com",
+  "x.com",
+  "twitter.com",
+  "facebook.com",
+  "tiktok.com",
+  "youtube.com",
 ];
 const DEFAULT_DISTRACTION_DOMAINS = [
   "instagram.com",
@@ -131,6 +147,21 @@ const EDUCATIONAL_KEYWORDS = [
   "leetcode",
   "architecture",
 ];
+const ALGO_KEYWORDS = [
+  "dsa",
+  "leetcode",
+  "algorithm",
+  "algorithms",
+  "binary search",
+  "dynamic programming",
+  "graph",
+  "graphs",
+  "tree",
+  "trees",
+  "recursion",
+  "linked list",
+  "heap",
+];
 const TITLE_ALLOW_KEYWORDS = ["tutorial", "coding", "system design", "engineering", "leetcode"];
 const TITLE_BLOCK_KEYWORDS = ["trailer", "music video", "gaming", "comedy"];
 const REQUIRED_DB_STORES = [
@@ -140,6 +171,7 @@ const REQUIRED_DB_STORES = [
   LOOP_PROMPT_STORE,
   STUDY_SESSION_STORE,
   STACCATO_BURST_STORE,
+  REPORT_LOG_STORE,
 ];
 
 const analyticsCache = new Map();
@@ -250,6 +282,15 @@ function openDb() {
         burstStore.createIndex("startTime", "startTime", { unique: false });
         burstStore.createIndex("dateKey", "dateKey", { unique: false });
         burstStore.createIndex("domain", "domain", { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(REPORT_LOG_STORE)) {
+        const reportStore = db.createObjectStore(REPORT_LOG_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        reportStore.createIndex("timestamp", "timestamp", { unique: false });
+        reportStore.createIndex("dateKey", "dateKey", { unique: false });
       }
     };
 
@@ -429,6 +470,17 @@ function addStaccatoBurst(entry) {
   );
 }
 
+function addReportLog(entry) {
+  return getStore(REPORT_LOG_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.add(entry);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
 function clearAllSessions() {
   return getStore(SESSION_STORE, "readwrite").then(
     (store) =>
@@ -491,6 +543,17 @@ function clearAllStudySessions() {
 
 function clearAllStaccatoBursts() {
   return getStore(STACCATO_BURST_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function clearAllReportLogs() {
+  return getStore(REPORT_LOG_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.clear();
@@ -643,6 +706,29 @@ function deleteStaccatoBurstsInRange(startMs, endMs) {
   );
 }
 
+function deleteReportLogsInRange(startMs, endMs) {
+  return getStore(REPORT_LOG_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function getSessionsInRange(startMs, endMs) {
   return getStore(SESSION_STORE, "readonly").then(
     (store) =>
@@ -724,6 +810,28 @@ function getStaccatoBurstsInRange(startMs, endMs) {
         request.onerror = () => reject(request.error);
       })
   );
+}
+
+function getReportLogsInRange(startMs, endMs) {
+  return getStore(REPORT_LOG_STORE, "readonly").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const request = index.getAll(keyRange);
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+async function getLatestReportTimestamp() {
+  const logs = await getReportLogsInRange(0, Date.now() + 1);
+  let latest = 0;
+  for (const log of logs) {
+    latest = Math.max(latest, Math.max(0, Number(log.timestamp) || 0));
+  }
+  return latest;
 }
 
 function isNonProductiveSession(session) {
@@ -923,6 +1031,29 @@ function deleteStaccatoBurstsOlderThan(cutoffMs) {
   );
 }
 
+function deleteReportLogsOlderThan(cutoffMs) {
+  return getStore(REPORT_LOG_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
+        const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function normalizeDomain(urlString) {
   if (!urlString) {
     return null;
@@ -1067,6 +1198,22 @@ async function getBaselineStatus() {
     elapsedDays,
     daysRemaining,
   };
+}
+
+async function getHardLockState() {
+  const data = await chrome.storage.local.get(HARD_LOCK_STATE_KEY);
+  const raw = data[HARD_LOCK_STATE_KEY];
+  if (!raw || typeof raw !== "object") {
+    return { domains: {} };
+  }
+
+  return {
+    domains: raw.domains && typeof raw.domains === "object" ? raw.domains : {},
+  };
+}
+
+async function setHardLockState(state) {
+  await chrome.storage.local.set({ [HARD_LOCK_STATE_KEY]: state });
 }
 
 function clone(value) {
@@ -1379,6 +1526,53 @@ function isProductiveDomain(domain) {
   return domainMatchesList(domain, PRODUCTIVE_DOMAINS);
 }
 
+function isDopamineDomain(domain) {
+  if (!domain) {
+    return false;
+  }
+  return domainMatchesList(domain, DOPAMINE_DOMAINS);
+}
+
+function getDomainSessionClassification(domain) {
+  if (!domain) {
+    return {
+      productivityHint: null,
+      productivitySource: null,
+      productivityLabel: null,
+    };
+  }
+
+  if (domainMatchesList(domain, ACTIVE_BUILDING_DOMAINS)) {
+    return {
+      productivityHint: "productive",
+      productivitySource: "domain_rule",
+      productivityLabel: "Active Building",
+    };
+  }
+
+  if (domainMatchesList(domain, INTERVIEW_PREP_DOMAINS)) {
+    return {
+      productivityHint: "productive",
+      productivitySource: "domain_rule",
+      productivityLabel: "Interview Prep",
+    };
+  }
+
+  if (isProductiveDomain(domain)) {
+    return {
+      productivityHint: "productive",
+      productivitySource: "domain_rule",
+      productivityLabel: "Productive",
+    };
+  }
+
+  return {
+    productivityHint: null,
+    productivitySource: null,
+    productivityLabel: null,
+  };
+}
+
 function getDoomscrollSurface(domain, url) {
   for (const surface of DOOMSCROLL_SURFACES) {
     if (Array.isArray(surface.domains) && domainMatchesList(domain, surface.domains)) {
@@ -1547,7 +1741,8 @@ async function markCurrentSessionProductive(metadata = {}) {
   await setActiveSession({
     ...active,
     productivityHint: "productive",
-    productivitySource: "youtube_metadata",
+    productivitySource: typeof metadata.source === "string" ? metadata.source : "youtube_metadata",
+    productivityLabel: typeof metadata.label === "string" ? metadata.label : "Productive",
     productivityTitle: typeof metadata.title === "string" ? metadata.title.slice(0, 200) : null,
     productivityKeywords: Array.isArray(metadata.keywords) ? metadata.keywords.slice(0, 20) : [],
   });
@@ -1575,6 +1770,9 @@ function createDefaultThoughtPauseState() {
     lastRapidSwitchPromptAtMs: 0,
     switchEvents: [],
     lastDomain: null,
+    promptTimestamps: [],
+    socialLockUntilMs: 0,
+    socialLockSource: null,
   };
 }
 
@@ -1588,6 +1786,11 @@ async function getThoughtPauseState() {
     lastRapidSwitchPromptAtMs: Number(state.lastRapidSwitchPromptAtMs) || 0,
     switchEvents: Array.isArray(state.switchEvents) ? state.switchEvents.filter((ts) => Number.isFinite(ts)) : [],
     lastDomain: typeof state.lastDomain === "string" ? state.lastDomain : null,
+    promptTimestamps: Array.isArray(state.promptTimestamps)
+      ? state.promptTimestamps.filter((ts) => Number.isFinite(ts))
+      : [],
+    socialLockUntilMs: Math.max(0, Number(state.socialLockUntilMs) || 0),
+    socialLockSource: typeof state.socialLockSource === "string" ? state.socialLockSource : null,
   };
 }
 
@@ -1827,19 +2030,48 @@ async function stopStudyMode() {
   const finalState = clone(state);
   applyStudyChunkToState(finalState, studySettings, now);
   const session = createStudySessionRecord(finalState, now);
-
-  if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
-    await addStudySession(session);
+  try {
+    if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
+      await addStudySession(session);
+    }
+  } finally {
+    await clearStudyModeState();
+    await clearStudyDistractionBadge();
+    analyticsCache.clear();
   }
-
-  await clearStudyModeState();
-  await clearStudyDistractionBadge();
-  analyticsCache.clear();
 
   return {
     active: false,
     session,
   };
+}
+
+async function recoverStudyModeOnStartup() {
+  const state = await getStudyModeState();
+  if (!state.active || !state.startedAt) {
+    return null;
+  }
+
+  const studySettings = await getStudySettings();
+  const finalState = clone(state);
+  const now = Date.now();
+  applyStudyChunkToState(finalState, studySettings, now);
+  const session = createStudySessionRecord(finalState, now);
+
+  try {
+    if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
+      await addStudySession({
+        ...session,
+        endedBy: "startup_recovery",
+      });
+    }
+  } finally {
+    await clearStudyModeState();
+    await clearStudyDistractionBadge();
+    analyticsCache.clear();
+  }
+
+  return session;
 }
 
 async function syncStudyMode(domain, url, reason = "sync") {
@@ -1929,6 +2161,7 @@ async function commitActiveSession(reason = "switch") {
       reason,
       productivityHint: active.productivityHint || null,
       productivitySource: active.productivitySource || null,
+      productivityLabel: active.productivityLabel || null,
       productivityTitle: active.productivityTitle || null,
       productivityKeywords: Array.isArray(active.productivityKeywords)
         ? active.productivityKeywords.slice(0, 20)
@@ -1958,6 +2191,7 @@ async function recoverActiveSessionOnStartup() {
       reason: "recovered",
       productivityHint: active.productivityHint || null,
       productivitySource: active.productivitySource || null,
+      productivityLabel: active.productivityLabel || null,
       productivityTitle: active.productivityTitle || null,
       productivityKeywords: Array.isArray(active.productivityKeywords)
         ? active.productivityKeywords.slice(0, 20)
@@ -1971,6 +2205,7 @@ async function recoverActiveSessionOnStartup() {
 async function trackDomain(domain, reason = "activate") {
   const now = Date.now();
   const active = await getActiveSession();
+  const domainClassification = getDomainSessionClassification(domain);
 
   if (active && active.domain === domain) {
     const continuousStartTime =
@@ -1983,6 +2218,11 @@ async function trackDomain(domain, reason = "activate") {
         startTime: now,
         lastSeenTime: now,
         continuousStartTime: continuousStartTime || now,
+        productivityHint: active.productivityHint || domainClassification.productivityHint || null,
+        productivitySource: active.productivitySource || domainClassification.productivitySource || null,
+        productivityLabel: active.productivityLabel || domainClassification.productivityLabel || null,
+        productivityTitle: active.productivityTitle || null,
+        productivityKeywords: Array.isArray(active.productivityKeywords) ? active.productivityKeywords.slice(0, 20) : [],
       });
       return { switched: false, started: true };
     }
@@ -2006,6 +2246,11 @@ async function trackDomain(domain, reason = "activate") {
       startTime: now,
       lastSeenTime: now,
       continuousStartTime: now,
+      productivityHint: domainClassification.productivityHint || null,
+      productivitySource: domainClassification.productivitySource || null,
+      productivityLabel: domainClassification.productivityLabel || null,
+      productivityTitle: null,
+      productivityKeywords: [],
     });
     return { switched: true, started: true };
   }
@@ -2027,9 +2272,10 @@ async function getCurrentDomainFromActiveTab() {
 }
 
 function sendUsageAlert(title, message) {
+  const iconUrl = getNotificationIconUrl();
   const primaryOptions = {
     type: "basic",
-    iconUrl: chrome.runtime.getURL("icon.png"),
+    iconUrl,
     title,
     message,
     priority: 1,
@@ -2041,11 +2287,11 @@ function sendUsageAlert(title, message) {
       return;
     }
 
-    // Retry with a simpler icon path and callback-based API to avoid unhandled promises.
+    // Retry once with the same embedded icon and consume lastError on both attempts.
     chrome.notifications.create(
       {
         type: "basic",
-        iconUrl: "icon.png",
+        iconUrl,
         title,
         message,
         priority: 1,
@@ -2057,6 +2303,10 @@ function sendUsageAlert(title, message) {
       }
     );
   });
+}
+
+function getNotificationIconUrl() {
+  return "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAIAAABMXPacAAABOElEQVR4nO3RMQ0AIADAMMC/5yFjRxMFPXp2ZgeurQPgZ0wQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjBCMEIwQjPwBhI4Cffx2nTsAAAAASUVORK5CYII=";
 }
 
 function getThoughtPauseReasonText(triggerType, domain) {
@@ -2101,6 +2351,9 @@ function isIgnorableTabMessagingError(error) {
     message.includes("Could not establish connection") ||
     message.includes("Receiving end does not exist") ||
     message.includes("The message port closed before a response was received") ||
+    message.includes(
+      "A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received"
+    ) ||
     message.includes("Extension context invalidated")
   );
 }
@@ -2462,6 +2715,74 @@ async function maybeTriggerRevisitLoopPrompt({ ts, domain }) {
   await maybeTriggerLoopLockout(activeTab);
 }
 
+function isHardLockDomain(domain) {
+  return domain === "instagram.com" || domain === "x.com" || domain === "twitter.com";
+}
+
+async function maybeEnforceSocialLockdown(tab, domain) {
+  if (!tab?.id || !domain || !isHardLockDomain(domain)) {
+    return false;
+  }
+
+  const state = await getThoughtPauseState();
+  const now = Date.now();
+  if (!state.socialLockUntilMs || now >= state.socialLockUntilMs) {
+    return false;
+  }
+
+  const remainingSeconds = Math.max(1, Math.ceil((state.socialLockUntilMs - now) / 1000));
+  await sendMessageToTab(tab.id, {
+    type: "SHOW_HARD_LOCK",
+    payload: {
+      domain,
+      seconds: remainingSeconds,
+      title: "Dijkstra Lockdown",
+      body: `Study-positive YouTube session detected. ${domain} is blocked until the current build window expires.`,
+    },
+  });
+  return true;
+}
+
+async function maybeTriggerDomainHardLock(tab, domain, timestamp) {
+  if (!tab?.id || !domain || !isHardLockDomain(domain)) {
+    return false;
+  }
+
+  const events = await getTabEventsInRange(Math.max(0, timestamp - ONE_HOUR_MS), timestamp + 1);
+  const visitsInHour = events.filter(
+    (event) =>
+      event.domain === domain &&
+      event.reason !== "bypass_attempt" &&
+      Number.isFinite(event.timestamp)
+  ).length;
+
+  if (visitsInHour <= 3) {
+    return false;
+  }
+
+  const state = await getHardLockState();
+  const lastLockedAt = Math.max(0, Number(state.domains?.[domain]) || 0);
+  if (lastLockedAt && timestamp - lastLockedAt < DOMAIN_HARD_LOCK_MS) {
+    return false;
+  }
+
+  await sendMessageToTab(tab.id, {
+    type: "SHOW_HARD_LOCK",
+    payload: {
+      domain,
+      seconds: 60,
+    },
+  });
+
+  await setHardLockState({
+    domains: {
+      ...(state.domains || {}),
+      [domain]: timestamp,
+    },
+  });
+  return true;
+}
+
 async function maybeLogTabEvent(tab, reason = "activeChange") {
   if (!tab || !Number.isInteger(tab.id) || !isTrackableUrl(tab.url)) {
     const state = await getTabEventState();
@@ -2512,6 +2833,7 @@ async function maybeLogTabEvent(tab, reason = "activeChange") {
   });
 
   await maybeTriggerRevisitLoopPrompt({ ts: now, domain });
+  await maybeTriggerDomainHardLock(tab, domain, now);
   analyticsCache.clear();
 
   await setTabEventState({
@@ -2528,6 +2850,8 @@ async function showThoughtPausePrompt(triggerType, domain) {
   }
 
   const settings = await getThoughtPauseSettings();
+  const state = await getThoughtPauseState();
+  const recentPromptCount = state.promptTimestamps.filter((ts) => Date.now() - ts <= 15 * 60 * 1000).length;
   const response = await withTimeout(
     sendMessageToTab(tab.id, {
       type: "SHOW_THOUGHT_PAUSE",
@@ -2541,6 +2865,9 @@ async function showThoughtPausePrompt(triggerType, domain) {
         quickChoices: settings.quickChoices,
         promptText: "Pause — What are you thinking right now?",
         reasonText: getThoughtPauseReasonText(triggerType, domain),
+        showCloseTab:
+          triggerType === "youtube_non_educational" || triggerType === "youtube_blocked_title",
+        slowModeSeconds: recentPromptCount >= 3 ? 10 : 0,
       },
     }),
     120000
@@ -2654,6 +2981,7 @@ async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey 
   }
 
   state.lastPromptAtMs = now;
+  state.promptTimestamps = [...(state.promptTimestamps || []).filter((ts) => now - ts <= 15 * 60 * 1000), now];
   await setThoughtPauseState(state);
 
   if (!response.storedByContent) {
@@ -2667,6 +2995,14 @@ async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey 
       note,
       action,
     });
+  }
+
+  if (action === "close_tab" && promptResult.tab?.id) {
+    try {
+      await chrome.tabs.remove(promptResult.tab.id);
+    } catch {
+      // Best-effort close only.
+    }
   }
 
   return true;
@@ -2724,6 +3060,11 @@ async function pruneThoughtPauseState() {
   const switchWindowMs = 10 * 60 * 1000;
   const now = Date.now();
   state.switchEvents = state.switchEvents.filter((ts) => now - ts <= switchWindowMs);
+  state.promptTimestamps = (state.promptTimestamps || []).filter((ts) => now - ts <= 15 * 60 * 1000);
+  if (state.socialLockUntilMs && now >= state.socialLockUntilMs) {
+    state.socialLockUntilMs = 0;
+    state.socialLockSource = null;
+  }
 
   await setThoughtPauseState(state);
 }
@@ -2736,6 +3077,7 @@ async function pruneOldSessions() {
   await deleteLoopPromptsOlderThan(cutoffMs);
   await deleteStudySessionsOlderThan(cutoffMs);
   await deleteStaccatoBurstsOlderThan(cutoffMs);
+  await deleteReportLogsOlderThan(cutoffMs);
   await pruneAlertState();
   await pruneThoughtPauseState();
   analyticsCache.clear();
@@ -2915,7 +3257,7 @@ async function syncTrackingFromActiveTab(reason = "sync") {
 
     if (
       domain &&
-      ["tabActivated", "tabUpdated", "startup", "install", "idleReturn", "interactionHeartbeat"].includes(reason)
+      ["tabActivated", "tabUpdated", "startup", "install"].includes(reason)
     ) {
       await swallowIgnorableAsync(() => maybePromptFirstVisit(domain, tab?.url || null));
     }
@@ -2998,6 +3340,42 @@ function getThoughtPauseAnalytics(pauses, sessions) {
     topTriggerSites,
     commonChoices,
     usageVsPauses,
+  };
+}
+
+function getHonestyMetrics(pauses, sessions) {
+  const dishonestBypasses = [];
+
+  for (const pause of pauses) {
+    const note = String(pause?.note || "").trim();
+    if (!note) {
+      continue;
+    }
+
+    const nextSession = getNextSessionOnDomain(sessions, pause.domain, Number(pause.timestamp) || 0);
+    if (!nextSession) {
+      continue;
+    }
+
+    const noteLength = note.length;
+    const sessionDurationMs = Math.max(0, Number(nextSession.durationMs) || 0);
+    if (noteLength >= 20 && sessionDurationMs < 10 * 1000) {
+      dishonestBypasses.push({
+        domain: pause.domain || "unknown",
+        justificationLength: noteLength,
+        sessionDurationMs,
+        sessionDurationText: formatDuration(sessionDurationMs),
+        timestamp: Number(pause.timestamp) || 0,
+      });
+    }
+  }
+
+  const selfControlIndex = Math.max(0, 100 - dishonestBypasses.length * 10);
+
+  return {
+    dishonestBypassCount: dishonestBypasses.length,
+    selfControlIndex,
+    dishonestBypasses: dishonestBypasses.slice(0, 5),
   };
 }
 
@@ -3344,6 +3722,185 @@ async function getBehavioralAnalytics(period, bounceThreshold = 5) {
   const data = getBehavioralAnalyticsFromTabEvents(tabEvents, bounceThreshold);
   analyticsCache.set(cacheKey, data);
   return data;
+}
+
+function isSessionProductive(session) {
+  return session?.productivityHint === "productive" || isProductiveDomain(session?.domain);
+}
+
+function rangesOverlap(startA, endA, startB, endB) {
+  return Math.max(startA, startB) < Math.min(endA, endB);
+}
+
+function isTimestampInIntervals(timestamp, intervals) {
+  return intervals.some((interval) => timestamp >= interval.start && timestamp < interval.end);
+}
+
+function getStudyIntervals(studySessions) {
+  return (studySessions || [])
+    .map((session) => ({
+      start: Math.max(0, Number(session.startTime) || 0),
+      end: Math.max(0, Number(session.endTime) || 0),
+    }))
+    .filter((interval) => interval.end > interval.start)
+    .sort((a, b) => a.start - b.start);
+}
+
+function filterSessionsForTrend(sessions, studyIntervals, filterMode) {
+  if (filterMode === "work") {
+    return sessions.filter((session) => isSessionProductive(session));
+  }
+
+  return sessions;
+}
+
+function filterEventsForTrend(tabEvents, studyIntervals, filterMode) {
+  if (filterMode === "study") {
+    return tabEvents.filter((event) => isTimestampInIntervals(Math.max(0, Number(event.timestamp) || 0), studyIntervals));
+  }
+  if (filterMode === "work") {
+    return tabEvents.filter((event) => isProductiveDomain(event.domain));
+  }
+  return tabEvents;
+}
+
+function getFragmentationValueForSessions(sessions) {
+  const sorted = [...sessions]
+    .filter((session) => session && Number.isFinite(session.startTime))
+    .sort((a, b) => a.startTime - b.startTime);
+
+  let fragments = 0;
+  let totalMs = 0;
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const current = sorted[i];
+    totalMs += Math.max(0, Number(current.durationMs) || 0);
+    if (i >= sorted.length - 1) {
+      continue;
+    }
+    const next = sorted[i + 1];
+    if (
+      current.domain &&
+      next.domain &&
+      current.domain !== next.domain &&
+      Number(current.durationMs) > 0 &&
+      Number(current.durationMs) < 2 * 60 * 1000
+    ) {
+      fragments += 1;
+    }
+  }
+
+  const totalHours = totalMs / ONE_HOUR_MS;
+  return {
+    fragments,
+    totalMs,
+    fi: totalHours > 0 ? Number((fragments / totalHours).toFixed(2)) : 0,
+  };
+}
+
+function getTrendLine(values) {
+  const points = values.map((value, index) => ({ x: index, y: Number(value) || 0 }));
+  const count = points.length;
+  if (count === 0) {
+    return { slope: 0, intercept: 0, values: [] };
+  }
+
+  const sumX = points.reduce((sum, point) => sum + point.x, 0);
+  const sumY = points.reduce((sum, point) => sum + point.y, 0);
+  const sumXY = points.reduce((sum, point) => sum + point.x * point.y, 0);
+  const sumXX = points.reduce((sum, point) => sum + point.x * point.x, 0);
+  const denominator = count * sumXX - sumX * sumX;
+  const slope = denominator === 0 ? 0 : (count * sumXY - sumX * sumY) / denominator;
+  const intercept = count === 0 ? 0 : (sumY - slope * sumX) / count;
+
+  return {
+    slope: Number(slope.toFixed(4)),
+    intercept: Number(intercept.toFixed(4)),
+    values: points.map((point) => Number((slope * point.x + intercept).toFixed(2))),
+  };
+}
+
+async function getTrendAnalytics(period, filterMode = "study") {
+  const bounds = getPeriodBounds(period);
+  const lastSevenDays = getLastSevenDaysBounds();
+  const [periodSessions, periodStudySessions, periodTabEvents, sevenDaySessions, sevenDayStudySessions] = await Promise.all([
+    getSessionsInRange(bounds.start, bounds.end),
+    getStudySessionsInRange(bounds.start, bounds.end),
+    getTabEventsInRange(bounds.start, bounds.end),
+    getSessionsInRange(lastSevenDays.start, lastSevenDays.end),
+    getStudySessionsInRange(lastSevenDays.start, lastSevenDays.end),
+  ]);
+
+  const periodStudyIntervals = getStudyIntervals(periodStudySessions);
+  const filteredPeriodSessions =
+    filterMode === "study"
+      ? periodSessions.filter((session) =>
+          periodStudyIntervals.some((interval) =>
+            rangesOverlap(
+              Math.max(0, Number(session.startTime) || 0),
+              Math.max(0, Number(session.endTime) || 0),
+              interval.start,
+              interval.end
+            )
+          )
+        )
+      : filterSessionsForTrend(periodSessions, periodStudyIntervals, filterMode);
+  const filteredPeriodEvents = filterEventsForTrend(periodTabEvents, periodStudyIntervals, filterMode);
+
+  const hourly = Array.from({ length: 24 }, (_, hour) => {
+    const hourSessions = filteredPeriodSessions.filter((session) => {
+      const startTime = Math.max(0, Number(session.startTime) || 0);
+      return new Date(startTime).getHours() === hour;
+    });
+    const value = getFragmentationValueForSessions(hourSessions);
+    return {
+      hour,
+      fi: value.fi,
+      fragments: value.fragments,
+      trackedHours: Number((value.totalMs / ONE_HOUR_MS).toFixed(2)),
+    };
+  });
+
+  let reactiveHour = 0;
+  let reactiveFi = -1;
+  for (const row of hourly) {
+    if (row.fi > reactiveFi) {
+      reactiveFi = row.fi;
+      reactiveHour = row.hour;
+    }
+  }
+
+  const sevenDayStudyIntervals = getStudyIntervals(sevenDayStudySessions);
+  const filteredSevenDaySessions =
+    filterMode === "study"
+      ? sevenDaySessions.filter((session) =>
+          sevenDayStudyIntervals.some((interval) =>
+            rangesOverlap(
+              Math.max(0, Number(session.startTime) || 0),
+              Math.max(0, Number(session.endTime) || 0),
+              interval.start,
+              interval.end
+            )
+          )
+        )
+      : filterSessionsForTrend(sevenDaySessions, sevenDayStudyIntervals, filterMode);
+
+  const byDay = getDailyFragmentationScoresForExport(filteredSevenDaySessions, lastSevenDays.start, lastSevenDays.end);
+  const trendLine = getTrendLine(byDay.map((item) => item.fi));
+
+  return {
+    filterMode,
+    hourlyFi: hourly,
+    reactiveHour,
+    reactiveHourLabel: `${reactiveHour}:00`,
+    dailyAverageFi: byDay,
+    trendLine,
+    trendMessage:
+      trendLine.slope < 0
+        ? "System Optimization in Progress: Focus is stabilizing."
+        : "System Drift Detected: Focus is not yet stabilizing.",
+    filteredEventCount: filteredPeriodEvents.length,
+  };
 }
 
 async function getLoopPromptSummary(nowMs = Date.now()) {
@@ -3767,7 +4324,54 @@ function getNextDailyReportTime() {
   return next.getTime();
 }
 
-async function sendDailySystemReport() {
+function createNotification(id, options) {
+  return new Promise((resolve) => {
+    chrome.notifications.create(id, options, () => {
+      const error = chrome.runtime.lastError;
+      void error;
+      resolve();
+    });
+  });
+}
+
+async function sendDailySystemReportNotification(message) {
+  const options = {
+    type: "basic",
+    iconUrl: getNotificationIconUrl(),
+    title: "Daily System Report",
+    message,
+    priority: 1,
+  };
+  await createNotification(DAILY_REPORT_NOTIFICATION_ID, options);
+}
+
+function getTodayNineAmMs() {
+  const now = new Date();
+  const target = new Date(now);
+  target.setHours(REPORT_HOUR, 0, 0, 0);
+  return target.getTime();
+}
+
+async function maybeSendCatchupDailyReport() {
+  const lastReportTimestamp = await getLatestReportTimestamp();
+  const now = Date.now();
+  const todayNineAmMs = getTodayNineAmMs();
+  const todayKey = getDayKeyFromMs(now);
+  const lastReportDayKey = lastReportTimestamp ? getDayKeyFromMs(lastReportTimestamp) : null;
+
+  if (now < todayNineAmMs) {
+    return false;
+  }
+
+  if (lastReportDayKey === todayKey && lastReportTimestamp >= todayNineAmMs) {
+    return false;
+  }
+
+  await sendDailySystemReport("catchup");
+  return true;
+}
+
+async function sendDailySystemReport(source = "alarm") {
   const bounds = getYesterdayBounds();
   const [sessions, studySessions, studySettings, tabEvents] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
@@ -3779,11 +4383,31 @@ async function sendDailySystemReport() {
   const behavioral = getBehavioralAnalyticsFromTabEvents(tabEvents, 5);
   const fragmentation = getFragmentationMetrics(sessions, behavioral, studyMode);
   const health = getSystemHealth(sessions, fragmentation, studyMode);
+  const totalLaptopMs = sessions.reduce((sum, session) => sum + Math.max(0, Number(session.durationMs) || 0), 0);
+  const dopamineMs = sessions.reduce((sum, session) => {
+    if (isDopamineDomain(session.domain)) {
+      return sum + Math.max(0, Number(session.durationMs) || 0);
+    }
+    return sum;
+  }, 0);
+  const dopamineShare = totalLaptopMs > 0 ? dopamineMs / totalLaptopMs : 0;
+  const warning =
+    dopamineShare > 0.15
+      ? ` Career Stagnation warning: ${Math.round(dopamineShare * 100)}% of yesterday's browser time went to dopamine sites.`
+      : "";
 
-  sendUsageAlert(
-    "Daily System Report",
-    `Yesterday: Uptime ${health.uptimeText}, Crashes ${health.crashes}.`
+  await sendDailySystemReportNotification(
+    `Yesterday: Uptime ${health.uptimeText}, Crashes ${health.crashes}.${warning}`
   );
+  await addReportLog({
+    timestamp: Date.now(),
+    dateKey: getDayKeyFromMs(Date.now()),
+    source,
+    uptimeText: health.uptimeText,
+    crashes: health.crashes,
+    dopamineShare,
+    careerStagnationWarning: dopamineShare > 0.15,
+  });
 }
 
 function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, behavioral, fragmentation }) {
@@ -3918,7 +4542,7 @@ function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, b
 
 async function getStats(period) {
   const bounds = getPeriodBounds(period);
-  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral, baseline] = await Promise.all([
+  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral, baseline, dailyBehavioral] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
@@ -3926,6 +4550,7 @@ async function getStats(period) {
     getStudySettings(),
     getBehavioralAnalytics(period, 5),
     getBaselineStatus(),
+    period === "daily" ? getBehavioralAnalytics("daily", 5) : getBehavioralAnalytics("daily", 5),
   ]);
 
   const domainTotals = new Map();
@@ -3955,6 +4580,7 @@ async function getStats(period) {
     todayCount: todayPauses.length,
     weekCount: weekPauses.length,
   };
+  const honesty = getHonestyMetrics(pauses, sessions);
   const studyStatus = activeStudyState.active
     ? {
         active: true,
@@ -3970,6 +4596,13 @@ async function getStats(period) {
       };
   const systemHealth = getSystemHealth(sessions, fragmentation, studyMode);
   const longestNonProductiveSession = getLongestNonProductiveSession(sessions);
+  const bypassesToday = Math.max(0, Number(dailyBehavioral?.bypassAttempts) || 0);
+  const controlMeter = {
+    bypassesToday,
+    threshold: 3,
+    progressPct: Math.min(100, Math.round((bypassesToday / 5) * 100)),
+    isCritical: bypassesToday > 3,
+  };
 
   return {
     period,
@@ -3982,10 +4615,12 @@ async function getStats(period) {
     maxWebsite,
     topSites,
     thoughtPause,
+    honesty,
     studyMode,
     studyStatus,
     fragmentation,
     systemHealth,
+    controlMeter,
     longestNonProductiveSession,
     insights: getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, behavioral, fragmentation }),
     loopPrompts,
@@ -4001,6 +4636,7 @@ async function clearData(period) {
     await clearAllLoopPrompts();
     await clearAllStudySessions();
     await clearAllStaccatoBursts();
+    await clearAllReportLogs();
     await clearActiveSession();
     await clearStudyModeState();
     await chrome.storage.local.remove(ALERT_STATE_KEY);
@@ -4021,6 +4657,7 @@ async function clearData(period) {
   await deleteLoopPromptsInRange(bounds.start, bounds.end);
   await deleteStudySessionsInRange(bounds.start, bounds.end);
   await deleteStaccatoBurstsInRange(bounds.start, bounds.end);
+  await deleteReportLogsInRange(bounds.start, bounds.end);
   analyticsCache.clear();
 }
 
@@ -4048,12 +4685,16 @@ initializeAlarmsAndState().catch(() => {});
 
 chrome.runtime.onInstalled.addListener(async () => {
   await initializeAlarmsAndState();
+  await recoverStudyModeOnStartup();
   await syncTrackingFromActiveTab("install");
+  await maybeSendCatchupDailyReport();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
   await initializeAlarmsAndState();
+  await recoverStudyModeOnStartup();
   await syncTrackingFromActiveTab("startup");
+  await maybeSendCatchupDailyReport();
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
@@ -4078,6 +4719,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.tabs.onActivated.addListener(async () => {
   const tab = await getCurrentActiveTab();
   const domain = normalizeDomain(tab?.url);
+  await maybeEnforceSocialLockdown(tab, domain);
   await maybePromptRapidSwitch(domain, tab?.url || null);
   await syncTrackingFromActiveTab("tabActivated");
   await maybeShowStudyAlert(tab, domain, tab?.url || null);
@@ -4095,6 +4737,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
   const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (activeTab && activeTab.id === tabId) {
+    await maybeEnforceSocialLockdown(tab, normalizeDomain(tab?.url));
     await syncTrackingFromActiveTab("tabUpdated");
     await maybeShowStudyAlert(tab, normalizeDomain(tab?.url), tab?.url || null);
   }
@@ -4270,6 +4913,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "SHOW_HONESTY_ALERT") {
+    sendUsageAlert(
+      "Honesty Alert",
+      "Rahul, you are bypassing your own goals. Is this 2-second scroll worth your career growth?"
+    );
+    sendResponse({ ok: true, data: { shown: true } });
+    return false;
+  }
+
   if (message.type === "LOG_BYPASS_ATTEMPT") {
     getCurrentActiveTab()
       .then((tab) => {
@@ -4306,6 +4958,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       ? payload.blockKeywords.map((item) => String(item || "").trim()).filter(Boolean)
       : [];
     const title = typeof payload.title === "string" ? payload.title : "";
+    const algoKeywords = [...allowKeywords, ...matchedKeywords].filter((keyword) =>
+      ALGO_KEYWORDS.some((algoKeyword) => String(keyword).toLowerCase().includes(algoKeyword))
+    );
 
     Promise.resolve()
       .then(async () => {
@@ -4329,19 +4984,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
 
         if (allowKeywords.length > 0) {
+          const pauseState = await getThoughtPauseState();
+          pauseState.socialLockUntilMs = Date.now() + 30 * 60 * 1000;
+          pauseState.socialLockSource = title || "study_youtube";
+          await setThoughtPauseState(pauseState);
           await markCurrentSessionProductive({
             title,
             keywords: allowKeywords,
+            source: algoKeywords.length > 0 ? "youtube_algo" : "youtube_metadata",
+            label: algoKeywords.length > 0 ? "Interview Prep" : "Productive",
           });
-          return { classification: "productive_title", matchedKeywords: allowKeywords };
+          return {
+            classification: algoKeywords.length > 0 ? "interview_prep" : "productive_title",
+            matchedKeywords: allowKeywords,
+          };
         }
 
         if (matchedKeywords.length > 0) {
+          const pauseState = await getThoughtPauseState();
+          pauseState.socialLockUntilMs = Date.now() + 30 * 60 * 1000;
+          pauseState.socialLockSource = title || "study_youtube";
+          await setThoughtPauseState(pauseState);
           await markCurrentSessionProductive({
             title,
             keywords: matchedKeywords,
+            source: algoKeywords.length > 0 ? "youtube_algo" : "youtube_metadata",
+            label: algoKeywords.length > 0 ? "Interview Prep" : "Productive",
           });
-          return { classification: "productive", matchedKeywords };
+          return {
+            classification: algoKeywords.length > 0 ? "interview_prep" : "productive",
+            matchedKeywords,
+          };
         }
 
         await maybePromptThoughtPause({
@@ -4368,6 +5041,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const period = message.period || "daily";
     const bounceThreshold = Math.max(1, Number(message.bounceThreshold) || 5);
     getBehavioralAnalytics(period, bounceThreshold)
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "GET_TREND_ANALYTICS") {
+    const period = message.period || "daily";
+    const filterMode = message.filterMode === "work" ? "work" : "study";
+    getTrendAnalytics(period, filterMode)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

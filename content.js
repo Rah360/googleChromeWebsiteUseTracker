@@ -5,8 +5,10 @@
   globalThis.__websiteUseTrackerContentInitialized = true;
 
   let activePrompt = null;
+  let activePromptDraft = null;
   let activeLoopPrompt = null;
   let activeStudyAlert = null;
+  let activeHardLock = null;
   let youtubeScanTimer = null;
   let lastYoutubeUrl = null;
   let youtubeTitleObserver = null;
@@ -30,6 +32,20 @@
   ];
   const TITLE_ALLOW_KEYWORDS = ["tutorial", "coding", "system design", "engineering", "leetcode"];
   const TITLE_BLOCK_KEYWORDS = ["trailer", "music video", "gaming", "comedy"];
+
+  function calculateEntropy(str) {
+    const len = str.length;
+    const freq = {};
+    for (let i = 0; i < len; i += 1) {
+      freq[str[i]] = (freq[str[i]] || 0) + 1;
+    }
+    let entropy = 0;
+    for (const char in freq) {
+      const p = freq[char] / len;
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
+  }
 
   function isExtensionContextInvalidatedError(error) {
     const message = String(error?.message || error || "");
@@ -204,6 +220,13 @@
     if (!activePrompt) {
       return;
     }
+    if (activePrompt.noteEl) {
+      activePromptDraft = {
+        signature: activePrompt.signature || null,
+        note: activePrompt.noteEl.value || "",
+        snoozeSiteToday: Boolean(activePrompt.dontShowCheckbox?.checked),
+      };
+    }
     if (activePrompt.domObserver) {
       activePrompt.domObserver.disconnect();
     }
@@ -218,6 +241,15 @@
     }
     activePrompt.host.remove();
     activePrompt = null;
+  }
+
+  function getThoughtPauseSignature(payload) {
+    return [
+      payload?.triggerType || "",
+      payload?.domain || "",
+      payload?.url || "",
+      payload?.reasonText || "",
+    ].join("::");
   }
 
   function removeLoopPrompt() {
@@ -240,6 +272,85 @@
     }
     activeStudyAlert.host.remove();
     activeStudyAlert = null;
+  }
+
+  function removeHardLock() {
+    if (!activeHardLock) {
+      return;
+    }
+    if (activeHardLock.timerId) {
+      clearInterval(activeHardLock.timerId);
+    }
+    activeHardLock.host.remove();
+    activeHardLock = null;
+  }
+
+  function hasLowHonestyPattern(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+      return false;
+    }
+
+    if (/(.)\1{4,}/i.test(text)) {
+      return true;
+    }
+
+    if (/\b([a-z0-9]{2,})\b(?:\s+\1\b)+/i.test(text)) {
+      return true;
+    }
+
+    if (/^([a-z]{3,})\1+$/i.test(text.replace(/\s+/g, ""))) {
+      return true;
+    }
+
+    return false;
+  }
+
+  function hasWordRepeatedMoreThanTwice(value) {
+    const words = String(value || "")
+      .toLowerCase()
+      .match(/\b[a-z0-9']+\b/g);
+    if (!words || words.length === 0) {
+      return false;
+    }
+
+    const counts = new Map();
+    for (const word of words) {
+      const next = (counts.get(word) || 0) + 1;
+      counts.set(word, next);
+      if (next > 2) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function lacksCognitiveDepth(value) {
+    const text = String(value || "").trim();
+    if (!text) {
+      return false;
+    }
+    return calculateEntropy(text) < 2.5 || hasWordRepeatedMoreThanTwice(text);
+  }
+
+  function looksLikeMash(value) {
+    const text = String(value || "").trim().toLowerCase();
+    if (!text) {
+      return false;
+    }
+
+    if (hasLowHonestyPattern(text)) {
+      return true;
+    }
+
+    const compact = text.replace(/\s+/g, "");
+    if (/^(?:[a-z0-9]{1,3}){3,}$/i.test(compact) && !/[aeiou]/i.test(compact)) {
+      return true;
+    }
+    if (/^([a-z0-9]{1,3})\1{2,}$/i.test(compact)) {
+      return true;
+    }
+    return false;
   }
 
   function getYoutubeMetadata() {
@@ -351,7 +462,12 @@
   }
 
   function renderPrompt(payload, resolveResponse) {
+    const signature = getThoughtPauseSignature(payload);
     if (activePrompt) {
+      if (activePrompt.signature === signature) {
+        activePrompt.noteEl?.focus();
+        return;
+      }
       removePrompt();
     }
 
@@ -398,6 +514,13 @@
     note.placeholder = "Type at least 15 characters before continuing.";
     note.maxLength = 280;
 
+    const noteError = document.createElement("p");
+    noteError.className = "tp-error";
+    noteError.hidden = true;
+    noteError.textContent = "Justification lacks cognitive depth. Try being honest.";
+    const slowModeSeconds = Math.max(0, Number(payload.slowModeSeconds) || 0);
+    let slowModeDone = slowModeSeconds <= 0;
+
     const suppressModalTextareaShortcuts = (event) => {
       event.stopPropagation();
       event.stopImmediatePropagation();
@@ -418,6 +541,11 @@
     dontShowWrap.appendChild(dontShowCheckbox);
     dontShowWrap.appendChild(dontShowText);
 
+    if (activePromptDraft?.signature === signature) {
+      note.value = activePromptDraft.note || "";
+      dontShowCheckbox.checked = Boolean(activePromptDraft.snoozeSiteToday);
+    }
+
     const actions = document.createElement("div");
     actions.className = "tp-actions";
 
@@ -427,10 +555,23 @@
     continueBtn.textContent = "Continue";
     continueBtn.disabled = true;
 
+    const shouldShowCloseTab = Boolean(payload.showCloseTab);
+    let closeTabBtn = null;
+    if (shouldShowCloseTab) {
+      closeTabBtn = document.createElement("button");
+      closeTabBtn.className = "tp-btn tp-btn-danger tp-btn-danger-large";
+      closeTabBtn.textContent = "Close Tab";
+    }
+
     function syncContinueState() {
-      const canContinue = note.value.trim().length >= 15;
+      const value = note.value.trim();
+      const canContinue =
+        slowModeDone && value.length >= 15 && !hasLowHonestyPattern(value) && !lacksCognitiveDepth(value);
       continueBtn.disabled = !canContinue;
       continueBtn.classList.toggle("tp-btn-ready", canContinue);
+      if (noteError.hidden === false && !hasLowHonestyPattern(value) && !lacksCognitiveDepth(value)) {
+        noteError.hidden = true;
+      }
     }
 
     function finish(result) {
@@ -448,6 +589,16 @@
     continueBtn.addEventListener("click", async () => {
       const value = note.value.trim();
       if (value.length < 15) {
+        return;
+      }
+
+      if (hasLowHonestyPattern(value) || lacksCognitiveDepth(value)) {
+        noteError.hidden = false;
+        if (looksLikeMash(value)) {
+          sendBackgroundMessage({ type: "SHOW_HONESTY_ALERT" }, 800).catch(() => {});
+        }
+        window.alert("Justification lacks cognitive depth. Try being honest.");
+        syncContinueState();
         return;
       }
 
@@ -480,18 +631,73 @@
       });
     });
 
+    if (closeTabBtn) {
+      closeTabBtn.addEventListener("click", () => {
+        finish({
+          action: "close_tab",
+          choice: "Close tab",
+          note: note.value.trim(),
+          storedByContent: false,
+        });
+      });
+    }
+
     note.addEventListener("input", syncContinueState);
     note.addEventListener("keydown", suppressModalTextareaShortcuts, true);
     note.addEventListener("keypress", suppressModalTextareaShortcuts, true);
     setTimeout(syncContinueState, 500);
 
+    if (closeTabBtn) {
+      actions.appendChild(closeTabBtn);
+    }
     actions.appendChild(continueBtn);
 
     modal.appendChild(title);
     modal.appendChild(subtitle);
     modal.appendChild(reason);
+    if (slowModeSeconds > 0) {
+      const slowModeWrap = document.createElement("div");
+      slowModeWrap.className = "tp-slow-mode";
+      const slowModeText = document.createElement("p");
+      slowModeText.className = "tp-slow-mode-text";
+      const slowModeBar = document.createElement("div");
+      slowModeBar.className = "tp-slow-mode-bar";
+      const slowModeBarFill = document.createElement("div");
+      slowModeBarFill.className = "tp-slow-mode-bar-fill";
+      slowModeBar.appendChild(slowModeBarFill);
+      let remaining = slowModeSeconds;
+      slowModeText.textContent =
+        "Rahul, your Brain CPU is overheating from context switches. Wait 10 seconds to stabilize focus.";
+      slowModeWrap.appendChild(slowModeText);
+      slowModeWrap.appendChild(slowModeBar);
+      modal.appendChild(slowModeWrap);
+
+      noteLabel.hidden = true;
+      note.hidden = true;
+      noteError.hidden = true;
+      actions.hidden = true;
+
+      const slowTimer = setInterval(() => {
+        remaining -= 1;
+        const progress = ((slowModeSeconds - remaining) / slowModeSeconds) * 100;
+        slowModeBarFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+        if (remaining <= 0) {
+          clearInterval(slowTimer);
+          slowModeDone = true;
+          slowModeWrap.remove();
+          noteLabel.hidden = false;
+          note.hidden = false;
+          actions.hidden = false;
+          note.focus();
+          syncContinueState();
+          return;
+        }
+      }, 1000);
+    }
+
     modal.appendChild(noteLabel);
     modal.appendChild(note);
+    modal.appendChild(noteError);
     modal.appendChild(actions);
 
     modal.appendChild(dontShowWrap);
@@ -536,11 +742,14 @@
     domObserver.observe(document.documentElement, { childList: true, subtree: true });
 
     activePrompt = {
+      signature,
       host,
       timerId: null,
       timeoutId: null,
       completed: false,
       domObserver,
+      noteEl: note,
+      dontShowCheckbox,
       cleanupGuards: () => {
         window.removeEventListener("contextmenu", guardContextMenu, true);
         window.removeEventListener("keydown", guardKeys, true);
@@ -552,7 +761,10 @@
     shadow.appendChild(overlay);
 
     document.documentElement.appendChild(host);
-    note.focus();
+    syncContinueState();
+    if (slowModeDone) {
+      note.focus();
+    }
   }
 
   function renderLoopPrompt(payload, resolveResponse) {
@@ -713,6 +925,62 @@
     activeStudyAlert = { host, timerId };
   }
 
+  function showHardLock(payload, resolveResponse) {
+    removeHardLock();
+
+    const host = document.createElement("div");
+    host.id = "hard-lock-host";
+    const shadow = host.attachShadow({ mode: "open" });
+
+    const stylesheetUrl = getContentStylesheetUrl();
+    if (!stylesheetUrl) {
+      return;
+    }
+    const style = document.createElement("link");
+    style.rel = "stylesheet";
+    style.href = stylesheetUrl;
+
+    const overlay = document.createElement("section");
+    overlay.className = "hl-overlay";
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-live", "assertive");
+
+    const title = document.createElement("h2");
+    title.className = "hl-title";
+    title.textContent = payload.title || "Hard Lock";
+
+    const body = document.createElement("p");
+    body.className = "hl-body";
+    body.textContent =
+      payload.body ||
+      `${payload.domain || "This site"} crossed the visit threshold. Cooling down before the next impulse click.`;
+
+    const countdown = document.createElement("div");
+    countdown.className = "hl-countdown";
+
+    let remaining = Math.max(1, Number(payload.seconds) || 60);
+    countdown.textContent = `${remaining}s`;
+
+    overlay.appendChild(title);
+    overlay.appendChild(body);
+    overlay.appendChild(countdown);
+    shadow.appendChild(style);
+    shadow.appendChild(overlay);
+    document.documentElement.appendChild(host);
+
+    const timerId = setInterval(() => {
+      remaining -= 1;
+      countdown.textContent = `${remaining}s`;
+      if (remaining <= 0) {
+        clearInterval(timerId);
+        removeHardLock();
+        resolveResponse({ completed: true });
+      }
+    }, 1000);
+
+    activeHardLock = { host, timerId };
+  }
+
   withRuntimeAccess((runtime) => {
     runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (!message || !extensionContextAlive) {
@@ -728,6 +996,13 @@
 
       if (message.type === "SHOW_STUDY_ALERT") {
         showStudyAlert(message.payload || {}, (result) => {
+          sendResponse(result);
+        });
+        return true;
+      }
+
+      if (message.type === "SHOW_HARD_LOCK") {
+        showHardLock(message.payload || {}, (result) => {
           sendResponse(result);
         });
         return true;

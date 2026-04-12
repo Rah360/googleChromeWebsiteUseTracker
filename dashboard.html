@@ -69,6 +69,39 @@
       </section>
 
       <section class="top-sites">
+        <h2>Control Meter</h2>
+        <p class="chart-help">
+          Tracks today’s bypass attempts. If this crosses 3 in a day, control integrity is slipping.
+        </p>
+        <div class="control-meter">
+          <div class="control-meter-track">
+            <div id="control-meter-fill" class="control-meter-fill"></div>
+          </div>
+          <p id="control-meter-text" class="control-meter-text">0 bypasses today.</p>
+        </div>
+      </section>
+
+      <section class="top-sites">
+        <h2>Honesty Score</h2>
+        <p class="chart-help">
+          Compares justification length to what you actually did next. Long excuses followed by sub-10-second sessions count as Dishonest Bypasses.
+        </p>
+        <div class="honesty-widget">
+          <div class="health-grid">
+            <div>
+              <span class="metric-label">Self-Control Index</span>
+              <p id="self-control-index">100</p>
+            </div>
+            <div>
+              <span class="metric-label">Dishonest Bypasses</span>
+              <p id="dishonest-bypass-count">0</p>
+            </div>
+          </div>
+          <ol id="dishonest-bypass-list"></ol>
+        </div>
+      </section>
+
+      <section class="top-sites">
         <h2>Top 10 Websites</h2>
         <ol id="top-sites-list"></ol>
       </section>
@@ -88,6 +121,34 @@
         </p>
         <div id="behavioral-mirror" class="behavioral-mirror"></div>
         <p id="cats-advice" class="cats-advice"></p>
+      </section>
+
+      <section id="analytics-vault" class="behavioral">
+        <h2>Analytics Vault</h2>
+        <div class="behavioral-controls">
+          <label for="analytics-filter">Dijkstra Filter</label>
+          <select id="analytics-filter">
+            <option value="study">Study Sessions</option>
+            <option value="work">Work Sessions</option>
+          </select>
+        </div>
+
+        <article class="top-sites">
+          <h3>Hourly Reactivity</h3>
+          <p class="chart-help">
+            Average Fragmentation Index by hour. Red marks the most reactive hour. Green marks deeper work zones under FI 5.
+          </p>
+          <svg id="hourly-reactivity-chart" class="chart-svg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
+        </article>
+
+        <article class="top-sites">
+          <h3>Improvement Slope</h3>
+          <p class="chart-help">
+            Daily average FI for the last 7 days with a fitted trend line.
+          </p>
+          <svg id="improvement-slope-chart" class="chart-svg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
+          <p id="trend-message" class="chart-help"></p>
+        </article>
       </section>
 
       <section class="study-mode-panel">

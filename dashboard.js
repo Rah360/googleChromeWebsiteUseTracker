@@ -12,6 +12,11 @@ const healthJitterEl = document.getElementById("health-jitter");
 const felineVisualEl = document.getElementById("feline-visual");
 const felineTitleEl = document.getElementById("feline-title");
 const felineTextEl = document.getElementById("feline-text");
+const controlMeterFillEl = document.getElementById("control-meter-fill");
+const controlMeterTextEl = document.getElementById("control-meter-text");
+const selfControlIndexEl = document.getElementById("self-control-index");
+const dishonestBypassCountEl = document.getElementById("dishonest-bypass-count");
+const dishonestBypassListEl = document.getElementById("dishonest-bypass-list");
 const behavioralMirrorEl = document.getElementById("behavioral-mirror");
 const catsAdviceEl = document.getElementById("cats-advice");
 const studyStatusCardEl = document.getElementById("study-status-card");
@@ -37,6 +42,7 @@ const tpChoicesEl = document.getElementById("tp-choices");
 const tpCorrelationEl = document.getElementById("tp-correlation");
 
 const bounceThresholdEl = document.getElementById("bounce-threshold");
+const analyticsFilterEl = document.getElementById("analytics-filter");
 const revisitBarsEl = document.getElementById("revisit-bars");
 const bouncePairsEl = document.getElementById("bounce-pairs");
 const switchingTimelineEl = document.getElementById("switching-timeline");
@@ -50,6 +56,9 @@ const heatmapLegendEl = document.getElementById("heatmap-legend");
 const loopPromptsTodayEl = document.getElementById("loop-prompts-today");
 const loopActionEl = document.getElementById("loop-action");
 const loopDomainsEl = document.getElementById("loop-domains");
+const hourlyReactivityChartEl = document.getElementById("hourly-reactivity-chart");
+const improvementSlopeChartEl = document.getElementById("improvement-slope-chart");
+const trendMessageEl = document.getElementById("trend-message");
 
 const clearPeriodBtn = document.getElementById("clear-period");
 const clearAllBtn = document.getElementById("clear-all");
@@ -61,6 +70,7 @@ let isStatsLoading = false;
 let latestFragmentation = null;
 let latestBehavioral = null;
 let latestStats = null;
+let latestTrendAnalytics = null;
 let toastTimer = null;
 let copyButtonResetTimer = null;
 const PRODUCTIVE_DOMAINS = new Set([
@@ -351,6 +361,53 @@ function renderInsights(rows) {
     item.appendChild(title);
     item.appendChild(detail);
     insightsListEl.appendChild(item);
+  }
+}
+
+function renderControlMeter(controlMeter) {
+  const data = controlMeter || {};
+  const bypassesToday = Math.max(0, Number(data.bypassesToday) || 0);
+  const progressPct = Math.max(0, Math.min(100, Number(data.progressPct) || 0));
+  const isCritical = Boolean(data.isCritical);
+
+  if (controlMeterFillEl) {
+    controlMeterFillEl.style.width = `${progressPct}%`;
+    controlMeterFillEl.classList.toggle("critical", isCritical);
+  }
+
+  if (controlMeterTextEl) {
+    controlMeterTextEl.textContent = isCritical
+      ? `${bypassesToday} bypasses today. Control meter is in the red.`
+      : `${bypassesToday} bypass${bypassesToday === 1 ? "" : "es"} today.`;
+  }
+}
+
+function renderHonestyWidget(honesty) {
+  const data = honesty || {};
+  if (selfControlIndexEl) {
+    selfControlIndexEl.textContent = String(Math.max(0, Number(data.selfControlIndex) || 0));
+  }
+  if (dishonestBypassCountEl) {
+    dishonestBypassCountEl.textContent = String(Math.max(0, Number(data.dishonestBypassCount) || 0));
+  }
+
+  if (!dishonestBypassListEl) {
+    return;
+  }
+
+  dishonestBypassListEl.innerHTML = "";
+  const rows = Array.isArray(data.dishonestBypasses) ? data.dishonestBypasses : [];
+  if (rows.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "No dishonest bypasses detected in this period.";
+    dishonestBypassListEl.appendChild(li);
+    return;
+  }
+
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.textContent = `${row.domain} - justification ${row.justificationLength} chars, session ${row.sessionDurationText}`;
+    dishonestBypassListEl.appendChild(li);
   }
 }
 
@@ -709,6 +766,144 @@ function renderBaselineStatus(baseline) {
       : `Baseline complete (${elapsedDays} day${elapsedDays === 1 ? "" : "s"})`;
 }
 
+function renderHourlyReactivityChart(rows = [], reactiveHour = null) {
+  hourlyReactivityChartEl.innerHTML = "";
+  if (!hourlyReactivityChartEl || !rows.length) {
+    return;
+  }
+
+  const width = 720;
+  const height = 240;
+  const padding = { top: 18, right: 16, bottom: 34, left: 28 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxFi = Math.max(5, ...rows.map((row) => Number(row.fi) || 0));
+  const barWidth = plotWidth / rows.length;
+
+  const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  baseline.setAttribute("x1", String(padding.left));
+  baseline.setAttribute("y1", String(height - padding.bottom));
+  baseline.setAttribute("x2", String(width - padding.right));
+  baseline.setAttribute("y2", String(height - padding.bottom));
+  baseline.setAttribute("stroke", "#4b5563");
+  baseline.setAttribute("stroke-width", "1");
+  hourlyReactivityChartEl.appendChild(baseline);
+
+  rows.forEach((row, index) => {
+    const fi = Math.max(0, Number(row.fi) || 0);
+    const barHeight = maxFi > 0 ? (fi / maxFi) * plotHeight : 0;
+    const x = padding.left + index * barWidth + 1;
+    const y = height - padding.bottom - barHeight;
+    const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    bar.setAttribute("x", String(x));
+    bar.setAttribute("y", String(y));
+    bar.setAttribute("width", String(Math.max(4, barWidth - 3)));
+    bar.setAttribute("height", String(barHeight));
+    bar.setAttribute("rx", "2");
+    bar.setAttribute("fill", row.hour === reactiveHour ? "#dc2626" : fi < 5 ? "#16a34a" : "#60a5fa");
+    bar.setAttribute("title", `${String(row.hour).padStart(2, "0")}:00 • FI ${fi}`);
+    hourlyReactivityChartEl.appendChild(bar);
+
+    if (index % 2 === 0) {
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", String(x + Math.max(4, barWidth - 3) / 2 - 7));
+      label.setAttribute("y", String(height - 10));
+      label.setAttribute("font-size", "9");
+      label.setAttribute("fill", "#94a3b8");
+      label.textContent = String(row.hour).padStart(2, "0");
+      hourlyReactivityChartEl.appendChild(label);
+    }
+  });
+}
+
+function renderImprovementSlopeChart(rows = [], trendLine = { values: [] }) {
+  improvementSlopeChartEl.innerHTML = "";
+  if (!improvementSlopeChartEl || !rows.length) {
+    if (trendMessageEl) {
+      trendMessageEl.textContent = "Not enough 7-day data yet.";
+    }
+    return;
+  }
+
+  const width = 720;
+  const height = 240;
+  const padding = { top: 18, right: 16, bottom: 34, left: 28 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxFi = Math.max(5, ...rows.map((row) => Number(row.fi) || 0), ...(trendLine.values || []).map((value) => Number(value) || 0));
+
+  const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  axis.setAttribute("x1", String(padding.left));
+  axis.setAttribute("y1", String(height - padding.bottom));
+  axis.setAttribute("x2", String(width - padding.right));
+  axis.setAttribute("y2", String(height - padding.bottom));
+  axis.setAttribute("stroke", "#4b5563");
+  axis.setAttribute("stroke-width", "1");
+  improvementSlopeChartEl.appendChild(axis);
+
+  const toPoint = (value, index, total) => {
+    const x = padding.left + (index / Math.max(1, total - 1)) * plotWidth;
+    const y = height - padding.bottom - ((Number(value) || 0) / maxFi) * plotHeight;
+    return `${x},${y}`;
+  };
+
+  const seriesPoints = rows.map((row, index) => toPoint(row.fi, index, rows.length)).join(" ");
+  const trendPoints = (trendLine.values || []).map((value, index) => toPoint(value, index, rows.length)).join(" ");
+
+  const series = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  series.setAttribute("points", seriesPoints);
+  series.setAttribute("fill", "none");
+  series.setAttribute("stroke", "#38bdf8");
+  series.setAttribute("stroke-width", "2.5");
+  improvementSlopeChartEl.appendChild(series);
+
+  const trend = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  trend.setAttribute("points", trendPoints);
+  trend.setAttribute("fill", "none");
+  trend.setAttribute("stroke", "#facc15");
+  trend.setAttribute("stroke-width", "2");
+  trend.setAttribute("stroke-dasharray", "6 5");
+  improvementSlopeChartEl.appendChild(trend);
+
+  rows.forEach((row, index) => {
+    const [x, y] = toPoint(row.fi, index, rows.length).split(",");
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("cx", x);
+    dot.setAttribute("cy", y);
+    dot.setAttribute("r", "3");
+    dot.setAttribute("fill", "#86efac");
+    improvementSlopeChartEl.appendChild(dot);
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("x", String(Number(x) - 16));
+    label.setAttribute("y", String(height - 10));
+    label.setAttribute("font-size", "9");
+    label.setAttribute("fill", "#94a3b8");
+    label.textContent = String(row.date || "").slice(5);
+    improvementSlopeChartEl.appendChild(label);
+  });
+}
+
+async function loadTrendAnalytics() {
+  try {
+    const period = periodSelect.value;
+    const filterMode = analyticsFilterEl?.value === "work" ? "work" : "study";
+    const data = await sendMessage({
+      type: "GET_TREND_ANALYTICS",
+      period,
+      filterMode,
+    });
+    latestTrendAnalytics = data;
+    renderHourlyReactivityChart(data.hourlyFi || [], data.reactiveHour);
+    renderImprovementSlopeChart(data.dailyAverageFi || [], data.trendLine || { values: [] });
+    if (trendMessageEl) {
+      trendMessageEl.textContent = data.trendMessage || "";
+    }
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+}
+
 async function loadStats(options = {}) {
   if (isStatsLoading) {
     return;
@@ -735,6 +930,8 @@ async function loadStats(options = {}) {
     latestFragmentation = data.fragmentation || null;
     renderTopSites(data.topSites);
     renderSystemHealth(data.systemHealth, data.fragmentation);
+    renderControlMeter(data.controlMeter);
+    renderHonestyWidget(data.honesty);
     renderInsights(data.insights);
     renderStudyMode(data.studyMode, data.studyStatus);
     renderFragmentation(data.fragmentation);
@@ -1062,11 +1259,18 @@ async function clearData(period) {
 periodSelect.addEventListener("change", async () => {
   await loadStats();
   await loadBehavioralAnalytics();
+  await loadTrendAnalytics();
 });
 
 bounceThresholdEl.addEventListener("change", () => {
   loadBehavioralAnalytics();
 });
+
+if (analyticsFilterEl) {
+  analyticsFilterEl.addEventListener("change", () => {
+    loadTrendAnalytics();
+  });
+}
 
 clearPeriodBtn.addEventListener("click", () => clearData(periodSelect.value));
 clearAllBtn.addEventListener("click", () => clearData("all"));
@@ -1091,6 +1295,7 @@ if (copyAiExportBtn) {
 document.addEventListener("DOMContentLoaded", async () => {
   await loadStats();
   await loadBehavioralAnalytics();
+  await loadTrendAnalytics();
 
   autoRefreshTimer = setInterval(() => {
     loadStats({ silent: true });
