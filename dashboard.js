@@ -406,7 +406,12 @@ function renderHonestyWidget(honesty) {
 
   for (const row of rows) {
     const li = document.createElement("li");
-    li.textContent = `${row.domain} - justification ${row.justificationLength} chars, session ${row.sessionDurationText}`;
+    const justification = typeof row.justification === "string" ? row.justification.trim() : "";
+    const snippet =
+      justification.length > 48 ? `${justification.slice(0, 48).trimEnd()}...` : justification;
+    li.textContent = justification
+      ? `${row.domain} - "${snippet}", session ${row.sessionDurationText}`
+      : `${row.domain} - session ${row.sessionDurationText}`;
     dishonestBypassListEl.appendChild(li);
   }
 }

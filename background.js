@@ -1,10 +1,11 @@
 const DB_NAME = "websiteUseTracker";
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 const SESSION_STORE = "sessions";
 const THOUGHT_PAUSE_STORE = "thought_pauses";
 const TAB_EVENT_STORE = "tab_events";
 const LOOP_PROMPT_STORE = "loop_prompts";
 const STUDY_SESSION_STORE = "study_sessions";
+const STUDY_DEBUG_EVENT_STORE = "study_debug_events";
 const STACCATO_BURST_STORE = "staccato_bursts";
 const REPORT_LOG_STORE = "system_reports";
 
@@ -65,6 +66,7 @@ const PRODUCTIVE_DOMAINS = [
 ];
 const ACTIVE_BUILDING_DOMAINS = ["localhost", "github.com", "stackoverflow.com"];
 const INTERVIEW_PREP_DOMAINS = ["leetcode.com"];
+const AMBIGUOUS_STUDY_DOMAINS = ["youtube.com"];
 const DOPAMINE_DOMAINS = [
   "instagram.com",
   "reddit.com",
@@ -170,6 +172,7 @@ const REQUIRED_DB_STORES = [
   TAB_EVENT_STORE,
   LOOP_PROMPT_STORE,
   STUDY_SESSION_STORE,
+  STUDY_DEBUG_EVENT_STORE,
   STACCATO_BURST_STORE,
   REPORT_LOG_STORE,
 ];
@@ -272,6 +275,17 @@ function openDb() {
         studyStore.createIndex("startTime", "startTime", { unique: false });
         studyStore.createIndex("dateKey", "dateKey", { unique: false });
         studyStore.createIndex("endTime", "endTime", { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(STUDY_DEBUG_EVENT_STORE)) {
+        const debugStore = db.createObjectStore(STUDY_DEBUG_EVENT_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        debugStore.createIndex("timestamp", "timestamp", { unique: false });
+        debugStore.createIndex("dateKey", "dateKey", { unique: false });
+        debugStore.createIndex("sessionId", "sessionId", { unique: false });
+        debugStore.createIndex("eventType", "eventType", { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STACCATO_BURST_STORE)) {
@@ -459,6 +473,21 @@ function addStudySession(entry) {
   );
 }
 
+function addStudyDebugEvent(entry) {
+  const enriched = {
+    ...entry,
+    dateKey: getDayKeyFromMs(entry.timestamp),
+  };
+  return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.add(enriched);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
 function addStaccatoBurst(entry) {
   return getStore(STACCATO_BURST_STORE, "readwrite").then(
     (store) =>
@@ -532,6 +561,17 @@ function clearAllLoopPrompts() {
 
 function clearAllStudySessions() {
   return getStore(STUDY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function clearAllStudyDebugEvents() {
+  return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.clear();
@@ -683,6 +723,29 @@ function deleteStudySessionsInRange(startMs, endMs) {
   );
 }
 
+function deleteStudyDebugEventsInRange(startMs, endMs) {
+  return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function deleteStaccatoBurstsInRange(startMs, endMs) {
   return getStore(STACCATO_BURST_STORE, "readwrite").then(
     (store) =>
@@ -791,6 +854,19 @@ function getStudySessionsInRange(startMs, endMs) {
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const request = index.getAll(keyRange);
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function getStudyDebugEventsInRange(startMs, endMs) {
+  return getStore(STUDY_DEBUG_EVENT_STORE, "readonly").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
         const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
         const request = index.getAll(keyRange);
         request.onsuccess = () => resolve(request.result || []);
@@ -990,6 +1066,29 @@ function deleteStudySessionsOlderThan(cutoffMs) {
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
+        const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
+function deleteStudyDebugEventsOlderThan(cutoffMs) {
+  return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
         const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
         const cursorRequest = index.openCursor(keyRange);
 
@@ -1462,6 +1561,7 @@ async function setLoopState(state) {
 function createEmptyStudyModeState(now = Date.now()) {
   return {
     active: false,
+    sessionId: null,
     startedAt: null,
     currentDomain: null,
     currentUrl: null,
@@ -1469,6 +1569,7 @@ function createEmptyStudyModeState(now = Date.now()) {
     lastSeenTime: null,
     totalActiveMs: 0,
     totalDistractingMs: 0,
+    totalAmbiguousMs: 0,
     totalDoomscrollMs: 0,
     totalSwitches: 0,
     siteStats: {},
@@ -1480,6 +1581,11 @@ function createEmptyStudyModeState(now = Date.now()) {
     lastDistractionAlertUrl: null,
     lastUpdatedAt: now,
   };
+}
+
+function createStudyModeSessionId(now = Date.now()) {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `study_${now}_${random}`;
 }
 
 function normalizeStudySiteStats(input) {
@@ -1498,6 +1604,7 @@ function normalizeStudySiteStats(input) {
       visits: Math.max(0, Number(raw?.visits) || 0),
       durationMs: Math.max(0, Number(raw?.durationMs) || 0),
       isDistracting: Boolean(raw?.isDistracting),
+      isAmbiguous: Boolean(raw?.isAmbiguous),
       doomscrollMs: Math.max(0, Number(raw?.doomscrollMs) || 0),
       lastUrl: typeof raw?.lastUrl === "string" ? raw.lastUrl : null,
     };
@@ -1594,9 +1701,13 @@ function classifyStudyVisit(domain, url, settings) {
     urlMatchesPattern(url, pattern)
   );
   const doomscrollSurface = getDoomscrollSurface(domain, url);
+  const isDistracting = domainMatch || patternMatch || Boolean(doomscrollSurface);
+  const isAmbiguous = !isDistracting && domainMatchesList(domain, AMBIGUOUS_STUDY_DOMAINS);
 
   return {
-    isDistracting: domainMatch || patternMatch || Boolean(doomscrollSurface),
+    category: isDistracting ? "distracting" : isAmbiguous ? "ambiguous" : "focused",
+    isDistracting,
+    isAmbiguous,
     doomscrollSurface,
   };
 }
@@ -1610,6 +1721,7 @@ async function getStudyModeState() {
 
   return {
     active: Boolean(raw.active),
+    sessionId: typeof raw.sessionId === "string" ? raw.sessionId : null,
     startedAt: Number.isFinite(raw.startedAt) ? raw.startedAt : null,
     currentDomain: typeof raw.currentDomain === "string" ? raw.currentDomain : null,
     currentUrl: typeof raw.currentUrl === "string" ? raw.currentUrl : null,
@@ -1617,6 +1729,7 @@ async function getStudyModeState() {
     lastSeenTime: Number.isFinite(raw.lastSeenTime) ? raw.lastSeenTime : null,
     totalActiveMs: Math.max(0, Number(raw.totalActiveMs) || 0),
     totalDistractingMs: Math.max(0, Number(raw.totalDistractingMs) || 0),
+    totalAmbiguousMs: Math.max(0, Number(raw.totalAmbiguousMs) || 0),
     totalDoomscrollMs: Math.max(0, Number(raw.totalDoomscrollMs) || 0),
     totalSwitches: Math.max(0, Number(raw.totalSwitches) || 0),
     siteStats: normalizeStudySiteStats(raw.siteStats),
@@ -1648,6 +1761,33 @@ async function setStudyModeState(state) {
 
 async function clearStudyModeState() {
   await chrome.storage.local.remove(STUDY_MODE_KEY);
+}
+
+async function logStudyDebugEvent(eventType, details = {}) {
+  const timestamp = Number.isFinite(details.timestamp) ? details.timestamp : Date.now();
+  const event = {
+    timestamp,
+    eventType,
+    sessionId: typeof details.sessionId === "string" ? details.sessionId : null,
+    reason: typeof details.reason === "string" ? details.reason : null,
+    domain: typeof details.domain === "string" ? details.domain : null,
+    url: typeof details.url === "string" ? details.url : null,
+    previousDomain: typeof details.previousDomain === "string" ? details.previousDomain : null,
+    previousUrl: typeof details.previousUrl === "string" ? details.previousUrl : null,
+    changedMode: details.changedMode === true,
+    previousDoomscrollSurface:
+      typeof details.previousDoomscrollSurface === "string" ? details.previousDoomscrollSurface : null,
+    nextDoomscrollSurface:
+      typeof details.nextDoomscrollSurface === "string" ? details.nextDoomscrollSurface : null,
+    tabId: Number.isInteger(details.tabId) ? details.tabId : null,
+    metadata: details.metadata && typeof details.metadata === "object" ? details.metadata : {},
+  };
+
+  try {
+    await addStudyDebugEvent(event);
+  } catch (error) {
+    console.warn("Failed to log study debug event", error);
+  }
 }
 
 function createDefaultActivityState() {
@@ -1861,12 +2001,14 @@ function ensureStudySite(state, domain, url = null, studySettings = DEFAULT_STUD
       visits: 0,
       durationMs: 0,
       isDistracting: classification.isDistracting,
+      isAmbiguous: classification.isAmbiguous,
       doomscrollMs: 0,
       lastUrl: null,
     };
   }
 
   state.siteStats[domain].isDistracting = classification.isDistracting;
+  state.siteStats[domain].isAmbiguous = classification.isAmbiguous;
   if (url) {
     state.siteStats[domain].lastUrl = url;
   }
@@ -1896,6 +2038,8 @@ function applyStudyChunkToState(state, studySettings = DEFAULT_STUDY_SETTINGS, n
   state.totalActiveMs += durationMs;
   if (classification.isDistracting) {
     state.totalDistractingMs += durationMs;
+  } else if (classification.isAmbiguous) {
+    state.totalAmbiguousMs += durationMs;
   }
   if (classification.doomscrollSurface) {
     if (
@@ -1945,11 +2089,13 @@ function createStudySessionRecord(state, endTime = Date.now()) {
   const sites = sortStudySites(state.siteStats);
   const uniqueSites = sites.length;
   const distractingSites = sites.filter((site) => site.isDistracting);
-  const focusTimeMs = Math.max(0, state.totalActiveMs - state.totalDistractingMs);
+  const ambiguousSites = sites.filter((site) => site.isAmbiguous);
+  const focusTimeMs = Math.max(0, state.totalActiveMs - state.totalDistractingMs - state.totalAmbiguousMs);
   const focusRatio =
     state.totalActiveMs > 0 ? Number((focusTimeMs / state.totalActiveMs).toFixed(2)) : 0;
 
   return {
+    sessionId: state.sessionId || null,
     dateKey: getDayKeyFromMs(state.startedAt || endTime),
     startTime: state.startedAt || endTime,
     endTime,
@@ -1957,6 +2103,7 @@ function createStudySessionRecord(state, endTime = Date.now()) {
     durationMs: Math.max(0, endTime - (state.startedAt || endTime)),
     activeStudyTimeMs: state.totalActiveMs,
     distractionTimeMs: state.totalDistractingMs,
+    ambiguousTimeMs: state.totalAmbiguousMs,
     doomscrollTimeMs: state.totalDoomscrollMs,
     focusTimeMs,
     focusRatio,
@@ -1965,6 +2112,7 @@ function createStudySessionRecord(state, endTime = Date.now()) {
     deepDiveCount: state.deepDiveCount || 0,
     sites,
     distractingSites,
+    ambiguousSites,
     doomscrollSurfaces: Object.entries(state.doomscrollBySurface || {})
       .map(([label, durationMs]) => ({
         label,
@@ -1988,6 +2136,13 @@ async function startStudyMode() {
   const existing = await getStudyModeState();
   const studySettings = await getStudySettings();
   if (existing.active) {
+    await logStudyDebugEvent("study_start_reused_existing", {
+      timestamp: now,
+      sessionId: existing.sessionId,
+      domain: existing.currentDomain,
+      url: existing.currentUrl,
+      reason: "start_request_while_active",
+    });
     return {
       active: true,
       session: getStudyModeSnapshot(existing, studySettings),
@@ -1998,6 +2153,7 @@ async function startStudyMode() {
   const domain = normalizeDomain(tab?.url);
   const state = createEmptyStudyModeState(now);
   state.active = true;
+  state.sessionId = createStudyModeSessionId(now);
   state.startedAt = now;
   state.currentDomain = domain;
   state.currentUrl = tab?.url || null;
@@ -2010,6 +2166,13 @@ async function startStudyMode() {
   }
 
   await setStudyModeState(state);
+  await logStudyDebugEvent("study_started", {
+    timestamp: now,
+    sessionId: state.sessionId,
+    domain,
+    url: tab?.url || null,
+    reason: "manual_start",
+  });
   return {
     active: true,
     session: getStudyModeSnapshot(state, studySettings),
@@ -2030,6 +2193,19 @@ async function stopStudyMode() {
   const finalState = clone(state);
   applyStudyChunkToState(finalState, studySettings, now);
   const session = createStudySessionRecord(finalState, now);
+  await logStudyDebugEvent("study_stopped", {
+    timestamp: now,
+    sessionId: finalState.sessionId,
+    domain: finalState.currentDomain,
+    url: finalState.currentUrl,
+    reason: "manual_stop",
+    metadata: {
+      durationMs: session.durationMs,
+      activeStudyTimeMs: session.activeStudyTimeMs,
+      distractionTimeMs: session.distractionTimeMs,
+      totalSwitches: session.totalSwitches,
+    },
+  });
   try {
     if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
       await addStudySession(session);
@@ -2057,6 +2233,18 @@ async function recoverStudyModeOnStartup() {
   const now = Date.now();
   applyStudyChunkToState(finalState, studySettings, now);
   const session = createStudySessionRecord(finalState, now);
+  await logStudyDebugEvent("study_recovered_on_startup", {
+    timestamp: now,
+    sessionId: finalState.sessionId,
+    domain: finalState.currentDomain,
+    url: finalState.currentUrl,
+    reason: "startup_recovery",
+    metadata: {
+      durationMs: session.durationMs,
+      activeStudyTimeMs: session.activeStudyTimeMs,
+      distractionTimeMs: session.distractionTimeMs,
+    },
+  });
 
   try {
     if (session.activeStudyTimeMs > 0 || session.uniqueSites > 0) {
@@ -2087,6 +2275,13 @@ async function syncStudyMode(domain, url, reason = "sync") {
 
   if (!nextDomain) {
     applyStudyChunkToState(state, studySettings, now);
+    await logStudyDebugEvent("study_sync_no_domain", {
+      timestamp: now,
+      sessionId: state.sessionId,
+      previousDomain: state.currentDomain,
+      previousUrl: state.currentUrl,
+      reason,
+    });
     state.currentDomain = null;
     state.currentUrl = null;
     state.chunkStartTime = null;
@@ -2100,6 +2295,13 @@ async function syncStudyMode(domain, url, reason = "sync") {
     if (site.visits === 0) {
       site.visits = 1;
     }
+    await logStudyDebugEvent("study_sync_attached_domain", {
+      timestamp: now,
+      sessionId: state.sessionId,
+      domain: nextDomain,
+      url: nextUrl,
+      reason,
+    });
     state.currentDomain = nextDomain;
     state.currentUrl = nextUrl;
     state.chunkStartTime = now;
@@ -2114,6 +2316,35 @@ async function syncStudyMode(domain, url, reason = "sync") {
     const nextClassification = classifyStudyVisit(nextDomain, nextUrl, studySettings);
     const changedMode =
       currentClassification.doomscrollSurface !== nextClassification.doomscrollSurface;
+    const urlChanged =
+      typeof state.currentUrl === "string" &&
+      typeof nextUrl === "string" &&
+      state.currentUrl !== nextUrl;
+
+    if (changedMode) {
+      await logStudyDebugEvent("study_sync_same_domain_changed_mode", {
+        timestamp: now,
+        sessionId: state.sessionId,
+        domain: nextDomain,
+        url: nextUrl,
+        previousUrl: state.currentUrl,
+        reason,
+        changedMode: true,
+        previousDoomscrollSurface: currentClassification.doomscrollSurface,
+        nextDoomscrollSurface: nextClassification.doomscrollSurface,
+      });
+    } else if (urlChanged && reason !== "heartbeat" && reason !== "interactionHeartbeat") {
+      await logStudyDebugEvent("study_sync_same_domain_url_change", {
+        timestamp: now,
+        sessionId: state.sessionId,
+        domain: nextDomain,
+        url: nextUrl,
+        previousUrl: state.currentUrl,
+        reason,
+        previousDoomscrollSurface: currentClassification.doomscrollSurface,
+        nextDoomscrollSurface: nextClassification.doomscrollSurface,
+      });
+    }
 
     if (reason === "heartbeat" || changedMode) {
       applyStudyChunkToState(state, studySettings, now);
@@ -2129,6 +2360,17 @@ async function syncStudyMode(domain, url, reason = "sync") {
 
   applyStudyChunkToState(state, studySettings, now);
   state.totalSwitches += 1;
+  await logStudyDebugEvent("study_sync_domain_switch", {
+    timestamp: now,
+    sessionId: state.sessionId,
+    domain: nextDomain,
+    url: nextUrl,
+    previousDomain: state.currentDomain,
+    previousUrl: state.currentUrl,
+    reason,
+    previousDoomscrollSurface: classifyStudyVisit(state.currentDomain, state.currentUrl, studySettings).doomscrollSurface,
+    nextDoomscrollSurface: classifyStudyVisit(nextDomain, nextUrl, studySettings).doomscrollSurface,
+  });
   const site = ensureStudySite(state, nextDomain, nextUrl, studySettings);
   site.visits += 1;
   state.currentDomain = nextDomain;
@@ -2496,6 +2738,17 @@ async function maybeShowStudyAlert(tab, domain, url) {
   const lastAlertAt = Number(studyState.lastDistractionAlertAt) || 0;
   const lastAlertUrl = studyState.lastDistractionAlertUrl || null;
   if (lastAlertUrl === url && now - lastAlertAt < STUDY_ALERT_COOLDOWN_MS) {
+    await logStudyDebugEvent("study_alert_suppressed_cooldown", {
+      timestamp: now,
+      sessionId: studyState.sessionId,
+      reason: "cooldown",
+      domain,
+      url,
+      tabId: tab.id,
+      metadata: {
+        millisecondsSinceLastAlert: now - lastAlertAt,
+      },
+    });
     return false;
   }
 
@@ -2515,6 +2768,14 @@ async function maybeShowStudyAlert(tab, domain, url) {
     return false;
   }
 
+  await logStudyDebugEvent("study_alert_shown", {
+    timestamp: now,
+    sessionId: studyState.sessionId,
+    reason: "distracting_site",
+    domain,
+    url,
+    tabId: tab.id,
+  });
   studyState.lastDistractionAlertAt = now;
   studyState.lastDistractionAlertUrl = url;
   await setStudyModeState(studyState);
@@ -3076,6 +3337,7 @@ async function pruneOldSessions() {
   await deleteTabEventsOlderThan(cutoffMs);
   await deleteLoopPromptsOlderThan(cutoffMs);
   await deleteStudySessionsOlderThan(cutoffMs);
+  await deleteStudyDebugEventsOlderThan(cutoffMs);
   await deleteStaccatoBurstsOlderThan(cutoffMs);
   await deleteReportLogsOlderThan(cutoffMs);
   await pruneAlertState();
@@ -3362,6 +3624,7 @@ function getHonestyMetrics(pauses, sessions) {
     if (noteLength >= 20 && sessionDurationMs < 10 * 1000) {
       dishonestBypasses.push({
         domain: pause.domain || "unknown",
+        justification: note,
         justificationLength: noteLength,
         sessionDurationMs,
         sessionDurationText: formatDuration(sessionDurationMs),
@@ -3397,6 +3660,7 @@ function getStudyModeAnalytics(
 
   let totalStudyTimeMs = 0;
   let totalDistractingTimeMs = 0;
+  let totalAmbiguousTimeMs = 0;
   let totalDoomscrollMs = 0;
   let deepDiveCount = 0;
   let totalSessions = 0;
@@ -3410,29 +3674,29 @@ function getStudyModeAnalytics(
     totalSessions += 1;
     totalStudyTimeMs += Math.max(0, Number(session.activeStudyTimeMs) || 0);
     totalDistractingTimeMs += Math.max(0, Number(session.distractionTimeMs) || 0);
+    totalAmbiguousTimeMs += Math.max(0, Number(session.ambiguousTimeMs) || 0);
     totalDoomscrollMs += Math.max(0, Number(session.doomscrollTimeMs) || 0);
     deepDiveCount += Math.max(0, Number(session.deepDiveCount) || 0);
     totalSwitches += Math.max(0, Number(session.totalSwitches) || 0);
 
     const sites = Array.isArray(session.sites) ? session.sites : [];
     for (const site of sites) {
-      const siteIsDistracting = classifyStudyVisit(
-        site.domain,
-        site.lastUrl || null,
-        studySettings
-      ).isDistracting;
+      const classification = classifyStudyVisit(site.domain, site.lastUrl || null, studySettings);
+      const siteIsDistracting = classification.isDistracting;
       const current = siteMap.get(site.domain) || {
         domain: site.domain,
         durationMs: 0,
         visits: 0,
         sessions: 0,
         isDistracting: siteIsDistracting,
+        isAmbiguous: classification.isAmbiguous,
         doomscrollMs: 0,
       };
       current.durationMs += Math.max(0, Number(site.durationMs) || 0);
       current.visits += Math.max(0, Number(site.visits) || 0);
       current.sessions += 1;
       current.isDistracting = current.isDistracting || siteIsDistracting;
+      current.isAmbiguous = current.isAmbiguous || classification.isAmbiguous;
       current.doomscrollMs += Math.max(0, Number(site.doomscrollMs) || 0);
       siteMap.set(site.domain, current);
 
@@ -3456,14 +3720,15 @@ function getStudyModeAnalytics(
       durationText: formatDuration(Math.max(0, Number(session.activeStudyTimeMs) || 0)),
       uniqueSites: Math.max(0, Number(session.uniqueSites) || 0),
       distractingTimeText: formatDuration(Math.max(0, Number(session.distractionTimeMs) || 0)),
+      ambiguousTimeText: formatDuration(Math.max(0, Number(session.ambiguousTimeMs) || 0)),
       doomscrollTimeText: formatDuration(Math.max(0, Number(session.doomscrollTimeMs) || 0)),
     });
   }
 
-  const focusTimeMs = Math.max(0, totalStudyTimeMs - totalDistractingTimeMs);
+  const focusTimeMs = Math.max(0, totalStudyTimeMs - totalDistractingTimeMs - totalAmbiguousTimeMs);
   const focusRatio = totalStudyTimeMs > 0 ? Math.round((focusTimeMs / totalStudyTimeMs) * 100) : 0;
   const topStudySites = [...siteMap.values()]
-    .filter((site) => !site.isDistracting)
+    .filter((site) => !site.isDistracting && !site.isAmbiguous)
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 10)
     .map((site) => ({
@@ -3479,6 +3744,16 @@ function getStudyModeAnalytics(
     }))
     .sort((a, b) => b.durationMs - a.durationMs)
     .slice(0, 5);
+
+  const ambiguousSites = [...siteMap.values()]
+    .filter((site) => site.isAmbiguous)
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 5)
+    .map((site) => ({
+      domain: site.domain,
+      durationMs: site.durationMs,
+      durationText: formatDuration(site.durationMs),
+    }));
 
   const doomscrollSurfaces = [...doomscrollMap.entries()]
     .map(([label, durationMs]) => ({
@@ -3497,6 +3772,8 @@ function getStudyModeAnalytics(
     totalStudyTimeText: formatDuration(totalStudyTimeMs),
     totalDistractingTimeMs,
     totalDistractingTimeText: formatDuration(totalDistractingTimeMs),
+    totalAmbiguousTimeMs,
+    totalAmbiguousTimeText: formatDuration(totalAmbiguousTimeMs),
     totalDoomscrollTimeMs: totalDoomscrollMs,
     totalDoomscrollTimeText: formatDuration(totalDoomscrollMs),
     deepDiveCount,
@@ -3505,6 +3782,7 @@ function getStudyModeAnalytics(
     totalSwitches,
     topStudySites,
     distractingSites,
+    ambiguousSites,
     doomscrollSurfaces,
     recentSessions: recentSessions.slice(0, 5),
   };
@@ -4274,13 +4552,34 @@ function getDeepDiveEventsForExport(studySessions) {
   return events.sort((a, b) => a.timestamp - b.timestamp);
 }
 
+function getStudyDebugEventsForExport(events) {
+  return (events || [])
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .map((event) => ({
+      timestamp: Number(event.timestamp) || 0,
+      event_type: event.eventType || "unknown",
+      session_id: event.sessionId || null,
+      reason: event.reason || null,
+      domain: event.domain || null,
+      url: event.url || null,
+      previous_domain: event.previousDomain || null,
+      previous_url: event.previousUrl || null,
+      changed_mode: event.changedMode === true,
+      previous_doomscroll_surface: event.previousDoomscrollSurface || null,
+      next_doomscroll_surface: event.nextDoomscrollSurface || null,
+      tab_id: Number.isInteger(event.tabId) ? event.tabId : null,
+      metadata: event.metadata && typeof event.metadata === "object" ? event.metadata : {},
+    }));
+}
+
 async function getAiExportData() {
   const bounds = getLastSevenDaysBounds();
-  const [sessions, thoughtPauses, loopPrompts, studySessions] = await Promise.all([
+  const [sessions, thoughtPauses, loopPrompts, studySessions, studyDebugEvents] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getLoopPromptsInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
+    getStudyDebugEventsInRange(bounds.start, bounds.end),
   ]);
 
   return {
@@ -4302,6 +4601,7 @@ async function getAiExportData() {
       previous_productive_domain: item.previous_productive_domain,
     })),
     deep_dive_events: getDeepDiveEventsForExport(studySessions),
+    study_mode_debug_events: getStudyDebugEventsForExport(studyDebugEvents),
   };
 }
 
@@ -4420,6 +4720,7 @@ function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, b
   const totalPauses = Number(thoughtPause?.totalPauses) || 0;
   const focusRatio = Number(studyMode?.focusRatio) || 0;
   const distractingMs = Number(studyMode?.totalDistractingTimeMs) || 0;
+  const ambiguousMs = Number(studyMode?.totalAmbiguousTimeMs) || 0;
   const studyMs = Number(studyMode?.totalStudyTimeMs) || 0;
   const doomscrollMs = Number(studyMode?.totalDoomscrollTimeMs) || 0;
 
@@ -4434,11 +4735,21 @@ function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, b
 
     lines.push(
       buildInsightLine(
-        "Study leakage",
+        "Known Distraction",
         distractingMs > 0
-          ? `${studyMode.totalDistractingTimeText} of that study time went to distracting sites, leaving a focus ratio of ${focusRatio}%.`
-          : `No distracting-site time was recorded during Study Mode ${periodLabel}.`,
+          ? `${studyMode.totalDistractingTimeText} of that study time matched known distracting sites or surfaces.`
+          : `No known distracting-site time was recorded during Study Mode ${periodLabel}.`,
         distractingMs > 0 && focusRatio < 75 ? "warning" : "positive"
+      )
+    );
+
+    lines.push(
+      buildInsightLine(
+        "Ambiguous Time",
+        ambiguousMs > 0
+          ? `${studyMode.totalAmbiguousTimeText} was on domains like YouTube that are not automatically counted as focused or distracting. Measured focus ratio is currently ${focusRatio}%.`
+          : `No ambiguous study-domain time was recorded ${periodLabel}. Measured focus ratio is currently ${focusRatio}%.`,
+        ambiguousMs > 0 ? "warning" : "neutral"
       )
     );
   } else {
@@ -4635,6 +4946,7 @@ async function clearData(period) {
     await clearAllTabEvents();
     await clearAllLoopPrompts();
     await clearAllStudySessions();
+    await clearAllStudyDebugEvents();
     await clearAllStaccatoBursts();
     await clearAllReportLogs();
     await clearActiveSession();
@@ -4656,6 +4968,7 @@ async function clearData(period) {
   await deleteTabEventsInRange(bounds.start, bounds.end);
   await deleteLoopPromptsInRange(bounds.start, bounds.end);
   await deleteStudySessionsInRange(bounds.start, bounds.end);
+  await deleteStudyDebugEventsInRange(bounds.start, bounds.end);
   await deleteStaccatoBurstsInRange(bounds.start, bounds.end);
   await deleteReportLogsInRange(bounds.start, bounds.end);
   analyticsCache.clear();
