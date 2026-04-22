@@ -3,6 +3,9 @@ const activeDomainEl = document.getElementById("active-domain");
 const studyStatusEl = document.getElementById("study-status");
 const studyMetaEl = document.getElementById("study-meta");
 const toggleStudyModeBtn = document.getElementById("toggle-study-mode");
+const playStatusEl = document.getElementById("play-status");
+const playMetaEl = document.getElementById("play-meta");
+const togglePlayModeBtn = document.getElementById("toggle-play-mode");
 const markDistractingBtn = document.getElementById("mark-distracting");
 const markDistractingStatusEl = document.getElementById("mark-distracting-status");
 const openDashboardBtn = document.getElementById("open-dashboard");
@@ -59,6 +62,35 @@ function renderStudyMode(studyMode) {
   toggleStudyModeBtn.dataset.mode = "stop";
 }
 
+function renderPlayMode(playMode, playQuota) {
+  const quota = playQuota || { remainingText: "0s", exhausted: false, message: null };
+  if (quota.exhausted && (!playMode || !playMode.active)) {
+    playStatusEl.textContent = quota.message || "Play Quota Exhausted. System locked in Study Mode until 4:00 AM.";
+    playMetaEl.textContent = `Play time remaining: ${quota.remainingText}`;
+    togglePlayModeBtn.textContent = "Play Locked";
+    togglePlayModeBtn.dataset.mode = "start";
+    togglePlayModeBtn.disabled = true;
+    return;
+  }
+
+  togglePlayModeBtn.disabled = false;
+
+  if (!playMode || !playMode.active) {
+    playStatusEl.textContent = "Play mode is off.";
+    playMetaEl.textContent = `Play time remaining: ${quota.remainingText}`;
+    togglePlayModeBtn.textContent = "Start Play Mode";
+    togglePlayModeBtn.dataset.mode = "start";
+    return;
+  }
+
+  const session = playMode.session || {};
+  const uniqueSites = Number(session.uniqueSites) || 0;
+  playStatusEl.textContent = `Play mode is on${playMode.currentDomain ? ` on ${playMode.currentDomain}` : ""}.`;
+  playMetaEl.textContent = `Play time: ${formatDuration(session.activePlayTimeMs || 0)} | Remaining: ${quota.remainingText} | Sites visited: ${uniqueSites}`;
+  togglePlayModeBtn.textContent = "Stop Play Mode";
+  togglePlayModeBtn.dataset.mode = "stop";
+}
+
 function setMarkDistractingStatus(message, isError = false) {
   markDistractingStatusEl.textContent = message;
   markDistractingStatusEl.style.color = isError ? "#b91c1c" : "#475569";
@@ -71,12 +103,14 @@ async function loadStatus() {
     activeDomainEl.textContent = `Current site: ${data.domain || "-"}`;
     currentActiveTab = data.activeTab || { domain: null, url: null };
     renderStudyMode(data.studyMode);
+    renderPlayMode(data.playMode, data.playQuota);
     markDistractingBtn.disabled = !currentActiveTab.domain;
     setMarkDistractingStatus("");
   } catch {
     trackingStatusEl.textContent = "Tracking status unavailable.";
     activeDomainEl.textContent = "Current site: -";
     renderStudyMode({ active: false });
+    renderPlayMode({ active: false }, { remainingText: "0s", exhausted: false, message: null });
     currentActiveTab = { domain: null, url: null };
     markDistractingBtn.disabled = true;
   }
@@ -100,6 +134,17 @@ toggleStudyModeBtn.addEventListener("click", async () => {
     await loadStatus();
   } catch {
     studyStatusEl.textContent = "Study mode update failed.";
+  }
+});
+
+togglePlayModeBtn.addEventListener("click", async () => {
+  const nextType =
+    togglePlayModeBtn.dataset.mode === "stop" ? "STOP_PLAY_MODE" : "START_PLAY_MODE";
+  try {
+    await sendMessage({ type: nextType });
+    await loadStatus();
+  } catch {
+    playStatusEl.textContent = "Play mode update failed.";
   }
 });
 

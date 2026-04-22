@@ -5,6 +5,7 @@ const THOUGHT_PAUSE_STORE = "thought_pauses";
 const TAB_EVENT_STORE = "tab_events";
 const LOOP_PROMPT_STORE = "loop_prompts";
 const STUDY_SESSION_STORE = "study_sessions";
+const PLAY_SESSION_STORE = "play_sessions";
 const STUDY_DEBUG_EVENT_STORE = "study_debug_events";
 const STACCATO_BURST_STORE = "staccato_bursts";
 const REPORT_LOG_STORE = "system_reports";
@@ -17,6 +18,9 @@ const TAB_EVENT_STATE_KEY = "tabEventState";
 const LOOP_SETTINGS_KEY = "revisitLoopSettings";
 const LOOP_STATE_KEY = "revisitLoopState";
 const STUDY_MODE_KEY = "studyModeState";
+const PLAY_MODE_KEY = "playModeState";
+const PLAY_TIME_REMAINING_KEY = "playTimeRemaining";
+const PLAY_QUOTA_RESET_AT_KEY = "playQuotaResetAt";
 const STUDY_SETTINGS_KEY = "studyModeSettings";
 const ACTIVITY_STATE_KEY = "activityState";
 const BASELINE_STATE_KEY = "baselineObservationState";
@@ -45,6 +49,8 @@ const LOOP_LOCKOUT_THRESHOLD = 3;
 const DEEP_DIVE_MAX_MS = 15 * 60 * 1000;
 const COOLDOWN_PAGE_SECONDS = 60;
 const REPORT_HOUR = 9;
+const PLAY_DAILY_BUDGET_MS = 90 * 60 * 1000;
+const PLAY_LOCK_MESSAGE = "Play Quota Exhausted. System locked in Study Mode until 4:00 AM.";
 const IDLE_DETECTION_SECONDS = 180;
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 const BASELINE_DAYS = 7;
@@ -172,6 +178,7 @@ const REQUIRED_DB_STORES = [
   TAB_EVENT_STORE,
   LOOP_PROMPT_STORE,
   STUDY_SESSION_STORE,
+  PLAY_SESSION_STORE,
   STUDY_DEBUG_EVENT_STORE,
   STACCATO_BURST_STORE,
   REPORT_LOG_STORE,
@@ -275,6 +282,16 @@ function openDb() {
         studyStore.createIndex("startTime", "startTime", { unique: false });
         studyStore.createIndex("dateKey", "dateKey", { unique: false });
         studyStore.createIndex("endTime", "endTime", { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(PLAY_SESSION_STORE)) {
+        const playStore = db.createObjectStore(PLAY_SESSION_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        playStore.createIndex("startTime", "startTime", { unique: false });
+        playStore.createIndex("dateKey", "dateKey", { unique: false });
+        playStore.createIndex("endTime", "endTime", { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STUDY_DEBUG_EVENT_STORE)) {
@@ -473,6 +490,21 @@ function addStudySession(entry) {
   );
 }
 
+function addPlaySession(entry) {
+  const enriched = {
+    ...entry,
+    late_night_usage: isLateNightUsage(entry.startTime, entry.endTime || entry.startTime),
+  };
+  return getStore(PLAY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.add(enriched);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
 function addStudyDebugEvent(entry) {
   const enriched = {
     ...entry,
@@ -561,6 +593,17 @@ function clearAllLoopPrompts() {
 
 function clearAllStudySessions() {
   return getStore(STUDY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function clearAllPlaySessions() {
+  return getStore(PLAY_SESSION_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.clear();
@@ -723,6 +766,29 @@ function deleteStudySessionsInRange(startMs, endMs) {
   );
 }
 
+function deletePlaySessionsInRange(startMs, endMs) {
+  return getStore(PLAY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function deleteStudyDebugEventsInRange(startMs, endMs) {
   return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
     (store) =>
@@ -851,6 +917,19 @@ function getLoopPromptsInRange(startMs, endMs) {
 
 function getStudySessionsInRange(startMs, endMs) {
   return getStore(STUDY_SESSION_STORE, "readonly").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const request = index.getAll(keyRange);
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function getPlaySessionsInRange(startMs, endMs) {
+  return getStore(PLAY_SESSION_STORE, "readonly").then(
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
@@ -1063,6 +1142,29 @@ function deleteLoopPromptsOlderThan(cutoffMs) {
 
 function deleteStudySessionsOlderThan(cutoffMs) {
   return getStore(STUDY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("startTime");
+        const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
+function deletePlaySessionsOlderThan(cutoffMs) {
+  return getStore(PLAY_SESSION_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
@@ -1583,9 +1685,142 @@ function createEmptyStudyModeState(now = Date.now()) {
   };
 }
 
+function createEmptyPlayModeState(now = Date.now()) {
+  return {
+    active: false,
+    startedAt: null,
+    currentDomain: null,
+    currentUrl: null,
+    chunkStartTime: null,
+    lastSeenTime: null,
+    totalActiveMs: 0,
+    siteStats: {},
+    lastUpdatedAt: now,
+  };
+}
+
 function createStudyModeSessionId(now = Date.now()) {
   const random = Math.random().toString(36).slice(2, 10);
   return `study_${now}_${random}`;
+}
+
+function getNextPlayQuotaResetAt(now = Date.now()) {
+  const reset = new Date(now);
+  reset.setHours(4, 0, 0, 0);
+  if (reset.getTime() <= now) {
+    reset.setDate(reset.getDate() + 1);
+  }
+  return reset.getTime();
+}
+
+async function getPlayQuotaState(now = Date.now()) {
+  const data = await chrome.storage.local.get([PLAY_TIME_REMAINING_KEY, PLAY_QUOTA_RESET_AT_KEY]);
+  let remainingMs = Math.max(0, Number(data[PLAY_TIME_REMAINING_KEY]));
+  let resetAt = Number(data[PLAY_QUOTA_RESET_AT_KEY]);
+
+  if (!Number.isFinite(remainingMs) || !Number.isFinite(resetAt) || now >= resetAt) {
+    remainingMs = PLAY_DAILY_BUDGET_MS;
+    resetAt = getNextPlayQuotaResetAt(now);
+    await chrome.storage.local.set({
+      [PLAY_TIME_REMAINING_KEY]: remainingMs,
+      [PLAY_QUOTA_RESET_AT_KEY]: resetAt,
+    });
+  }
+
+  return {
+    remainingMs,
+    remainingText: formatDuration(remainingMs),
+    resetAt,
+    exhausted: remainingMs <= 0,
+    message: remainingMs <= 0 ? PLAY_LOCK_MESSAGE : null,
+  };
+}
+
+async function setPlayQuotaState(remainingMs, resetAt) {
+  await chrome.storage.local.set({
+    [PLAY_TIME_REMAINING_KEY]: Math.max(0, Number(remainingMs) || 0),
+    [PLAY_QUOTA_RESET_AT_KEY]: resetAt,
+  });
+}
+
+async function consumePlayQuota(durationMs, now = Date.now()) {
+  const quota = await getPlayQuotaState(now);
+  if (durationMs <= 0) {
+    return quota;
+  }
+  const remainingMs = Math.max(0, quota.remainingMs - durationMs);
+  await setPlayQuotaState(remainingMs, quota.resetAt);
+  return {
+    remainingMs,
+    remainingText: formatDuration(remainingMs),
+    resetAt: quota.resetAt,
+    exhausted: remainingMs <= 0,
+    message: remainingMs <= 0 ? PLAY_LOCK_MESSAGE : null,
+  };
+}
+
+function isTechnicalDomain(domain) {
+  if (!domain) {
+    return false;
+  }
+  return getDomainSessionClassification(domain).productivityHint === "productive";
+}
+
+async function closeNonTechnicalTabs() {
+  const tabs = await chrome.tabs.query({});
+  const closable = tabs.filter((tab) => {
+    if (!isTrackableUrl(tab?.url)) {
+      return false;
+    }
+    const domain = normalizeDomain(tab.url);
+    return Boolean(domain) && !isTechnicalDomain(domain);
+  });
+
+  await Promise.all(
+    closable.map(
+      (tab) =>
+        new Promise((resolve) => {
+          chrome.tabs.remove(tab.id, () => {
+            const removeError = chrome.runtime.lastError;
+            void removeError;
+            resolve();
+          });
+        })
+    )
+  );
+
+  return closable.length;
+}
+
+async function persistAndExitPlayMode(finalState, endTime = Date.now(), metadata = {}) {
+  const session = createPlaySessionRecord(finalState, endTime);
+  const sessionToStore = {
+    ...session,
+    ...(metadata && typeof metadata === "object" ? metadata : {}),
+  };
+
+  try {
+    if (session.activePlayTimeMs > 0 || session.uniqueSites > 0) {
+      await addPlaySession(sessionToStore);
+    }
+  } finally {
+    await clearPlayModeState();
+  }
+
+  return {
+    active: false,
+    session: sessionToStore,
+  };
+}
+
+async function switchPlayToStudyMode(reason = "quota_exhausted") {
+  const closedTabs = await closeNonTechnicalTabs();
+  const studyResult = await startStudyMode();
+  return {
+    reason,
+    closedTabs,
+    studyMode: studyResult,
+  };
 }
 
 function normalizeStudySiteStats(input) {
@@ -1606,6 +1841,28 @@ function normalizeStudySiteStats(input) {
       isDistracting: Boolean(raw?.isDistracting),
       isAmbiguous: Boolean(raw?.isAmbiguous),
       doomscrollMs: Math.max(0, Number(raw?.doomscrollMs) || 0),
+      lastUrl: typeof raw?.lastUrl === "string" ? raw.lastUrl : null,
+    };
+  }
+
+  return stats;
+}
+
+function normalizePlaySiteStats(input) {
+  const stats = {};
+  if (!input || typeof input !== "object") {
+    return stats;
+  }
+
+  for (const [domain, raw] of Object.entries(input)) {
+    if (!domain) {
+      continue;
+    }
+
+    stats[domain] = {
+      domain,
+      visits: Math.max(0, Number(raw?.visits) || 0),
+      durationMs: Math.max(0, Number(raw?.durationMs) || 0),
       lastUrl: typeof raw?.lastUrl === "string" ? raw.lastUrl : null,
     };
   }
@@ -1755,12 +2012,45 @@ async function getStudyModeState() {
   };
 }
 
+async function getPlayModeState() {
+  const data = await chrome.storage.local.get(PLAY_MODE_KEY);
+  const raw = data[PLAY_MODE_KEY];
+  if (!raw || typeof raw !== "object") {
+    return createEmptyPlayModeState();
+  }
+
+  return {
+    active: Boolean(raw.active),
+    startedAt: Number.isFinite(raw.startedAt) ? raw.startedAt : null,
+    currentDomain: typeof raw.currentDomain === "string" ? raw.currentDomain : null,
+    currentUrl: typeof raw.currentUrl === "string" ? raw.currentUrl : null,
+    chunkStartTime: Number.isFinite(raw.chunkStartTime) ? raw.chunkStartTime : null,
+    lastSeenTime: Number.isFinite(raw.lastSeenTime) ? raw.lastSeenTime : null,
+    totalActiveMs: Math.max(0, Number(raw.totalActiveMs) || 0),
+    siteStats: normalizePlaySiteStats(raw.siteStats),
+    lastUpdatedAt: Number.isFinite(raw.lastUpdatedAt) ? raw.lastUpdatedAt : Date.now(),
+  };
+}
+
 async function setStudyModeState(state) {
   await chrome.storage.local.set({ [STUDY_MODE_KEY]: state });
 }
 
+async function setPlayModeState(state) {
+  await chrome.storage.local.set({ [PLAY_MODE_KEY]: state });
+}
+
 async function clearStudyModeState() {
   await chrome.storage.local.remove(STUDY_MODE_KEY);
+}
+
+async function clearPlayModeState() {
+  await chrome.storage.local.remove(PLAY_MODE_KEY);
+}
+
+async function isPlayModeActive() {
+  const state = await getPlayModeState();
+  return Boolean(state.active);
 }
 
 async function logStudyDebugEvent(eventType, details = {}) {
@@ -2131,6 +2421,85 @@ function getStudyModeSnapshot(state, studySettings = DEFAULT_STUDY_SETTINGS) {
   return createStudySessionRecord(snapshot, now);
 }
 
+function ensurePlaySite(state, domain, url = null) {
+  if (!domain) {
+    return null;
+  }
+
+  if (!state.siteStats[domain]) {
+    state.siteStats[domain] = {
+      domain,
+      visits: 0,
+      durationMs: 0,
+      lastUrl: null,
+    };
+  }
+
+  if (url) {
+    state.siteStats[domain].lastUrl = url;
+  }
+
+  return state.siteStats[domain];
+}
+
+function applyPlayChunkToState(state, now = Date.now()) {
+  if (!state.active || !state.currentDomain || !state.chunkStartTime) {
+    state.lastUpdatedAt = now;
+    return 0;
+  }
+
+  const lastSeenTime =
+    typeof state.lastSeenTime === "number" ? state.lastSeenTime : state.chunkStartTime;
+  const cappedEndTime = Math.min(now, lastSeenTime + INACTIVITY_GRACE_MS);
+  const endTime = Math.max(state.chunkStartTime, cappedEndTime);
+  const durationMs = Math.max(0, endTime - state.chunkStartTime);
+  if (durationMs <= 0) {
+    state.lastUpdatedAt = now;
+    return 0;
+  }
+
+  const site = ensurePlaySite(state, state.currentDomain, state.currentUrl);
+  site.durationMs += durationMs;
+  state.totalActiveMs += durationMs;
+  state.chunkStartTime = now;
+  state.lastSeenTime = now;
+  state.lastUpdatedAt = now;
+  return durationMs;
+}
+
+async function applyPlayChunkWithQuota(state, now = Date.now()) {
+  const durationMs = applyPlayChunkToState(state, now);
+  const quota = await consumePlayQuota(durationMs, now);
+  return { durationMs, quota };
+}
+
+function createPlaySessionRecord(state, endTime = Date.now()) {
+  const sites = Object.values(state.siteStats || {})
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .map((site) => ({
+      ...site,
+      durationText: formatDuration(site.durationMs),
+    }));
+
+  return {
+    dateKey: getDayKeyFromMs(state.startedAt || endTime),
+    startTime: state.startedAt || endTime,
+    endTime,
+    late_night_usage: isLateNightUsage(state.startedAt || endTime, endTime),
+    durationMs: Math.max(0, endTime - (state.startedAt || endTime)),
+    activePlayTimeMs: state.totalActiveMs,
+    uniqueSites: sites.length,
+    sites,
+  };
+}
+
+function getPlayModeSnapshot(state) {
+  const now = Date.now();
+  const snapshot = clone(state);
+  applyPlayChunkToState(snapshot, now);
+  return createPlaySessionRecord(snapshot, now);
+}
+
 async function startStudyMode() {
   const now = Date.now();
   const existing = await getStudyModeState();
@@ -2147,6 +2516,11 @@ async function startStudyMode() {
       active: true,
       session: getStudyModeSnapshot(existing, studySettings),
     };
+  }
+
+  const playState = await getPlayModeState();
+  if (playState.active) {
+    await stopPlayMode();
   }
 
   const tab = await getCurrentActiveTab();
@@ -2176,6 +2550,56 @@ async function startStudyMode() {
   return {
     active: true,
     session: getStudyModeSnapshot(state, studySettings),
+  };
+}
+
+async function startPlayMode() {
+  const existing = await getPlayModeState();
+  const quota = await getPlayQuotaState();
+  if (existing.active) {
+    return {
+      active: true,
+      session: getPlayModeSnapshot(existing),
+      quota,
+    };
+  }
+
+  if (quota.exhausted) {
+    return {
+      active: false,
+      blocked: true,
+      session: null,
+      quota,
+    };
+  }
+
+  const studyState = await getStudyModeState();
+  if (studyState.active) {
+    await stopStudyMode();
+  }
+
+  const now = Date.now();
+  const tab = await getCurrentActiveTab();
+  const domain = normalizeDomain(tab?.url);
+  const state = createEmptyPlayModeState(now);
+  state.active = true;
+  state.startedAt = now;
+  state.currentDomain = domain;
+  state.currentUrl = tab?.url || null;
+  state.chunkStartTime = domain ? now : null;
+  state.lastSeenTime = domain ? now : null;
+
+  if (domain) {
+    const site = ensurePlaySite(state, domain, tab?.url || null);
+    site.visits = 1;
+  }
+
+  await setPlayModeState(state);
+  await clearStudyDistractionBadge();
+  return {
+    active: true,
+    session: getPlayModeSnapshot(state),
+    quota,
   };
 }
 
@@ -2222,6 +2646,21 @@ async function stopStudyMode() {
   };
 }
 
+async function stopPlayMode() {
+  const state = await getPlayModeState();
+  if (!state.active || !state.startedAt) {
+    return {
+      active: false,
+      session: null,
+    };
+  }
+
+  const now = Date.now();
+  const finalState = clone(state);
+  await applyPlayChunkWithQuota(finalState, now);
+  return persistAndExitPlayMode(finalState, now);
+}
+
 async function recoverStudyModeOnStartup() {
   const state = await getStudyModeState();
   if (!state.active || !state.startedAt) {
@@ -2260,6 +2699,22 @@ async function recoverStudyModeOnStartup() {
   }
 
   return session;
+}
+
+async function recoverPlayModeOnStartup() {
+  const state = await getPlayModeState();
+  if (!state.active || !state.startedAt) {
+    return null;
+  }
+
+  const finalState = clone(state);
+  const now = Date.now();
+  await applyPlayChunkWithQuota(finalState, now);
+  const result = await persistAndExitPlayMode(finalState, now, {
+    endedBy: "startup_recovery",
+  });
+
+  return result.session;
 }
 
 async function syncStudyMode(domain, url, reason = "sync") {
@@ -2380,6 +2835,116 @@ async function syncStudyMode(domain, url, reason = "sync") {
   state.lastUpdatedAt = now;
   await setStudyModeState(state);
   return getStudyModeSnapshot(state, studySettings);
+}
+
+async function syncPlayMode(domain, url, reason = "sync") {
+  const state = await getPlayModeState();
+  if (!state.active || !state.startedAt) {
+    return null;
+  }
+
+  const now = Date.now();
+  const nextDomain = domain || null;
+  const nextUrl = url || null;
+
+  if (!nextDomain) {
+    const { quota } = await applyPlayChunkWithQuota(state, now);
+    if (quota.exhausted) {
+      await setPlayModeState(state);
+      const result = await persistAndExitPlayMode(state, now, {
+        endedBy: "quota_exhausted",
+      });
+      const transition = await switchPlayToStudyMode("quota_exhausted");
+      return {
+        ...result,
+        quota,
+        transition,
+      };
+    }
+    state.currentDomain = null;
+    state.currentUrl = null;
+    state.chunkStartTime = null;
+    state.lastSeenTime = null;
+    await setPlayModeState(state);
+    return {
+      ...getPlayModeSnapshot(state),
+      quota,
+    };
+  }
+
+  if (!state.currentDomain) {
+    const site = ensurePlaySite(state, nextDomain, nextUrl);
+    if (site.visits === 0) {
+      site.visits = 1;
+    }
+    state.currentDomain = nextDomain;
+    state.currentUrl = nextUrl;
+    state.chunkStartTime = now;
+    state.lastSeenTime = now;
+    state.lastUpdatedAt = now;
+    await setPlayModeState(state);
+    const quota = await getPlayQuotaState(now);
+    return {
+      ...getPlayModeSnapshot(state),
+      quota,
+    };
+  }
+
+  if (state.currentDomain === nextDomain) {
+    let quota;
+    if (reason === "heartbeat") {
+      ({ quota } = await applyPlayChunkWithQuota(state, now));
+      if (quota.exhausted) {
+        await setPlayModeState(state);
+        const result = await persistAndExitPlayMode(state, now, {
+          endedBy: "quota_exhausted",
+        });
+        const transition = await switchPlayToStudyMode("quota_exhausted");
+        return {
+          ...result,
+          quota,
+          transition,
+        };
+      }
+      state.currentUrl = nextUrl;
+    } else {
+      state.currentUrl = nextUrl;
+      state.lastSeenTime = now;
+      state.lastUpdatedAt = now;
+      quota = await getPlayQuotaState(now);
+    }
+    await setPlayModeState(state);
+    return {
+      ...getPlayModeSnapshot(state),
+      quota,
+    };
+  }
+
+  const { quota } = await applyPlayChunkWithQuota(state, now);
+  if (quota.exhausted) {
+    await setPlayModeState(state);
+    const result = await persistAndExitPlayMode(state, now, {
+      endedBy: "quota_exhausted",
+    });
+    const transition = await switchPlayToStudyMode("quota_exhausted");
+    return {
+      ...result,
+      quota,
+      transition,
+    };
+  }
+  const site = ensurePlaySite(state, nextDomain, nextUrl);
+  site.visits += 1;
+  state.currentDomain = nextDomain;
+  state.currentUrl = nextUrl;
+  state.chunkStartTime = now;
+  state.lastSeenTime = now;
+  state.lastUpdatedAt = now;
+  await setPlayModeState(state);
+  return {
+    ...getPlayModeSnapshot(state),
+    quota,
+  };
 }
 
 async function commitActiveSession(reason = "switch") {
@@ -2698,6 +3263,10 @@ async function setStudyDistractionBadge(domain) {
 }
 
 async function updateStudyDistractionBadge(domain, url) {
+  if (await isPlayModeActive()) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
   const [studyState, studySettings] = await Promise.all([getStudyModeState(), getStudySettings()]);
   if (!studyState.active || !domain || !url) {
     await clearStudyDistractionBadge();
@@ -2715,6 +3284,10 @@ async function updateStudyDistractionBadge(domain, url) {
 }
 
 async function maybeShowStudyAlert(tab, domain, url) {
+  if (await isPlayModeActive()) {
+    await clearStudyDistractionBadge();
+    return false;
+  }
   if (!tab?.id || !domain || !url || !isTrackableUrl(url)) {
     await clearStudyDistractionBadge();
     return false;
@@ -2829,6 +3402,12 @@ async function startDeepDiveTimer(tabId, url) {
 }
 
 async function syncDeepDiveTimer(tab) {
+  if (await isPlayModeActive()) {
+    if (tab?.id) {
+      clearDeepDiveTimer(tab.id);
+    }
+    return;
+  }
   if (!tab || !Number.isInteger(tab.id)) {
     return;
   }
@@ -2842,6 +3421,9 @@ async function syncDeepDiveTimer(tab) {
 }
 
 async function maybeTriggerLoopLockout(tab) {
+  if (await isPlayModeActive()) {
+    return false;
+  }
   const now = Date.now();
   loopCount.push(now);
   while (loopCount.length > 0 && now - loopCount[0] > LOOP_LOCKOUT_WINDOW_MS) {
@@ -2914,6 +3496,9 @@ async function showRevisitLoopPrompt(payload) {
 }
 
 async function maybeTriggerRevisitLoopPrompt({ ts, domain }) {
+  if (await isPlayModeActive()) {
+    return;
+  }
   const settings = await getLoopSettings();
   if (!settings.enabled) {
     return;
@@ -2981,6 +3566,9 @@ function isHardLockDomain(domain) {
 }
 
 async function maybeEnforceSocialLockdown(tab, domain) {
+  if (await isPlayModeActive()) {
+    return false;
+  }
   if (!tab?.id || !domain || !isHardLockDomain(domain)) {
     return false;
   }
@@ -3005,6 +3593,9 @@ async function maybeEnforceSocialLockdown(tab, domain) {
 }
 
 async function maybeTriggerDomainHardLock(tab, domain, timestamp) {
+  if (await isPlayModeActive()) {
+    return false;
+  }
   if (!tab?.id || !domain || !isHardLockDomain(domain)) {
     return false;
   }
@@ -3128,7 +3719,8 @@ async function showThoughtPausePrompt(triggerType, domain) {
         reasonText: getThoughtPauseReasonText(triggerType, domain),
         showCloseTab:
           triggerType === "youtube_non_educational" || triggerType === "youtube_blocked_title",
-        slowModeSeconds: recentPromptCount >= 3 ? 10 : 0,
+        throttleMode: recentPromptCount >= 3,
+        throttleSeconds: recentPromptCount >= 3 ? 10 : 0,
       },
     }),
     120000
@@ -3141,6 +3733,9 @@ async function showThoughtPausePrompt(triggerType, domain) {
 }
 
 async function maybePromptThoughtPause({ triggerType, domain, url, thresholdKey = null, force = false }) {
+  if (await isPlayModeActive()) {
+    return false;
+  }
   if (!domain) {
     return false;
   }
@@ -3337,6 +3932,7 @@ async function pruneOldSessions() {
   await deleteTabEventsOlderThan(cutoffMs);
   await deleteLoopPromptsOlderThan(cutoffMs);
   await deleteStudySessionsOlderThan(cutoffMs);
+  await deletePlaySessionsOlderThan(cutoffMs);
   await deleteStudyDebugEventsOlderThan(cutoffMs);
   await deleteStaccatoBurstsOlderThan(cutoffMs);
   await deleteReportLogsOlderThan(cutoffMs);
@@ -3513,18 +4109,23 @@ async function syncTrackingFromActiveTab(reason = "sync") {
     const domain = normalizeDomain(tab?.url);
     await trackDomain(domain, reason);
     await syncStudyMode(domain, tab?.url || null, reason);
+    const playModeActive = await isPlayModeActive();
+    await syncPlayMode(domain, tab?.url || null, reason);
     await swallowIgnorableAsync(() => updateStudyDistractionBadge(domain, tab?.url || null));
 
-    await swallowIgnorableAsync(() => maybeSendUsageAlerts(domain, tab?.url || null));
+    if (!playModeActive) {
+      await swallowIgnorableAsync(() => maybeSendUsageAlerts(domain, tab?.url || null));
+    }
 
     if (
+      !playModeActive &&
       domain &&
       ["tabActivated", "tabUpdated", "startup", "install"].includes(reason)
     ) {
       await swallowIgnorableAsync(() => maybePromptFirstVisit(domain, tab?.url || null));
     }
 
-    if (domain && reason === "heartbeat") {
+    if (!playModeActive && domain && reason === "heartbeat") {
       await swallowIgnorableAsync(() => maybePromptContinuousUsage(domain, tab?.url || null));
     }
   } catch (error) {
@@ -3784,6 +4385,69 @@ function getStudyModeAnalytics(
     distractingSites,
     ambiguousSites,
     doomscrollSurfaces,
+    recentSessions: recentSessions.slice(0, 5),
+  };
+}
+
+function getPlayModeAnalytics(sessions, activeState = null, bounds = null) {
+  const sourceSessions = [...sessions];
+  if (
+    activeState &&
+    activeState.active &&
+    activeState.startedAt &&
+    (!bounds || activeState.startedAt >= bounds.start)
+  ) {
+    sourceSessions.push(getPlayModeSnapshot(activeState));
+  }
+
+  let totalPlayTimeMs = 0;
+  let totalSessions = 0;
+  const siteMap = new Map();
+  const recentSessions = [];
+
+  for (const session of sourceSessions) {
+    totalSessions += 1;
+    totalPlayTimeMs += Math.max(0, Number(session.activePlayTimeMs) || 0);
+
+    const sites = Array.isArray(session.sites) ? session.sites : [];
+    for (const site of sites) {
+      const current = siteMap.get(site.domain) || {
+        domain: site.domain,
+        durationMs: 0,
+        visits: 0,
+        sessions: 0,
+      };
+      current.durationMs += Math.max(0, Number(site.durationMs) || 0);
+      current.visits += Math.max(0, Number(site.visits) || 0);
+      current.sessions += 1;
+      siteMap.set(site.domain, current);
+    }
+
+    recentSessions.push({
+      startTime: session.startTime,
+      endTime: session.endTime,
+      durationMs: Math.max(0, Number(session.activePlayTimeMs) || 0),
+      durationText: formatDuration(Math.max(0, Number(session.activePlayTimeMs) || 0)),
+      uniqueSites: Math.max(0, Number(session.uniqueSites) || 0),
+    });
+  }
+
+  const topPlaySites = [...siteMap.values()]
+    .sort((a, b) => b.durationMs - a.durationMs)
+    .slice(0, 10)
+    .map((site) => ({
+      ...site,
+      durationText: formatDuration(site.durationMs),
+    }));
+
+  recentSessions.sort((a, b) => b.startTime - a.startTime);
+
+  return {
+    totalSessions,
+    totalPlayTimeMs,
+    totalPlayTimeText: formatDuration(totalPlayTimeMs),
+    totalUniqueSites: siteMap.size,
+    topPlaySites,
     recentSessions: recentSessions.slice(0, 5),
   };
 }
@@ -4853,11 +5517,24 @@ function getInsights({ period, topSites, totalTimeMs, studyMode, thoughtPause, b
 
 async function getStats(period) {
   const bounds = getPeriodBounds(period);
-  const [sessions, pauses, studySessions, activeStudyState, studySettings, behavioral, baseline, dailyBehavioral] = await Promise.all([
+  const [
+    sessions,
+    pauses,
+    studySessions,
+    playSessions,
+    activeStudyState,
+    activePlayState,
+    studySettings,
+    behavioral,
+    baseline,
+    dailyBehavioral,
+  ] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
+    getPlaySessionsInRange(bounds.start, bounds.end),
     getStudyModeState(),
+    getPlayModeState(),
     getStudySettings(),
     getBehavioralAnalytics(period, 5),
     getBaselineStatus(),
@@ -4885,6 +5562,7 @@ async function getStats(period) {
   ]);
   const loopPrompts = await getLoopPromptSummary();
   const studyMode = getStudyModeAnalytics(studySessions, activeStudyState, bounds, studySettings);
+  const playMode = getPlayModeAnalytics(playSessions, activePlayState, bounds);
   const fragmentation = getFragmentationMetrics(sessions, behavioral, studyMode);
   const thoughtPause = {
     ...getThoughtPauseAnalytics(pauses, sessions),
@@ -4898,6 +5576,19 @@ async function getStats(period) {
         currentDomain: activeStudyState.currentDomain,
         startedAt: activeStudyState.startedAt,
         currentSession: getStudyModeSnapshot(activeStudyState, studySettings),
+      }
+    : {
+        active: false,
+        currentDomain: null,
+        startedAt: null,
+        currentSession: null,
+      };
+  const playStatus = activePlayState.active
+    ? {
+        active: true,
+        currentDomain: activePlayState.currentDomain,
+        startedAt: activePlayState.startedAt,
+        currentSession: getPlayModeSnapshot(activePlayState),
       }
     : {
         active: false,
@@ -4929,6 +5620,8 @@ async function getStats(period) {
     honesty,
     studyMode,
     studyStatus,
+    playMode,
+    playStatus,
     fragmentation,
     systemHealth,
     controlMeter,
@@ -4946,11 +5639,13 @@ async function clearData(period) {
     await clearAllTabEvents();
     await clearAllLoopPrompts();
     await clearAllStudySessions();
+    await clearAllPlaySessions();
     await clearAllStudyDebugEvents();
     await clearAllStaccatoBursts();
     await clearAllReportLogs();
     await clearActiveSession();
     await clearStudyModeState();
+    await clearPlayModeState();
     await chrome.storage.local.remove(ALERT_STATE_KEY);
     await chrome.storage.local.remove(THOUGHT_PAUSE_STATE_KEY);
     await chrome.storage.local.remove(TAB_EVENT_STATE_KEY);
@@ -4968,6 +5663,7 @@ async function clearData(period) {
   await deleteTabEventsInRange(bounds.start, bounds.end);
   await deleteLoopPromptsInRange(bounds.start, bounds.end);
   await deleteStudySessionsInRange(bounds.start, bounds.end);
+  await deletePlaySessionsInRange(bounds.start, bounds.end);
   await deleteStudyDebugEventsInRange(bounds.start, bounds.end);
   await deleteStaccatoBurstsInRange(bounds.start, bounds.end);
   await deleteReportLogsInRange(bounds.start, bounds.end);
@@ -4999,6 +5695,7 @@ initializeAlarmsAndState().catch(() => {});
 chrome.runtime.onInstalled.addListener(async () => {
   await initializeAlarmsAndState();
   await recoverStudyModeOnStartup();
+  await recoverPlayModeOnStartup();
   await syncTrackingFromActiveTab("install");
   await maybeSendCatchupDailyReport();
 });
@@ -5006,6 +5703,7 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onStartup.addListener(async () => {
   await initializeAlarmsAndState();
   await recoverStudyModeOnStartup();
+  await recoverPlayModeOnStartup();
   await syncTrackingFromActiveTab("startup");
   await maybeSendCatchupDailyReport();
 });
@@ -5155,8 +5853,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.type === "GET_TRACKING_STATUS") {
-    Promise.all([getActiveSession(), getStudyModeState(), getStudySettings(), getCurrentActiveTab()])
-      .then(([active, studyMode, studySettings, tab]) =>
+    Promise.all([
+      getActiveSession(),
+      getStudyModeState(),
+      getStudySettings(),
+      getPlayModeState(),
+      getCurrentActiveTab(),
+      getPlayQuotaState(),
+    ])
+      .then(([active, studyMode, studySettings, playMode, tab, playQuota]) =>
         sendResponse({
           ok: true,
           data: {
@@ -5175,6 +5880,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   currentDomain: null,
                   session: null,
                 },
+            playMode: playMode.active
+              ? {
+                  active: true,
+                  startedAt: playMode.startedAt,
+                  currentDomain: playMode.currentDomain,
+                  session: getPlayModeSnapshot(playMode),
+                }
+              : {
+                  active: false,
+                  startedAt: null,
+                  currentDomain: null,
+                  session: null,
+                },
+            playQuota,
             activeTab: {
               domain: normalizeDomain(tab?.url) || null,
               url: tab?.url || null,
@@ -5195,6 +5914,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "STOP_STUDY_MODE") {
     stopStudyMode()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "START_PLAY_MODE") {
+    startPlayMode()
+      .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "STOP_PLAY_MODE") {
+    stopPlayMode()
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;

@@ -33,6 +33,12 @@ const studyTopSitesEl = document.getElementById("study-top-sites");
 const studyDistractionsEl = document.getElementById("study-distractions");
 const studyDoomscrollSurfacesEl = document.getElementById("study-doomscroll-surfaces");
 const studyRecentSessionsEl = document.getElementById("study-recent-sessions");
+const playStatusCardEl = document.getElementById("play-status-card");
+const playTotalTimeEl = document.getElementById("play-total-time");
+const playSessionCountEl = document.getElementById("play-session-count");
+const playSiteCountEl = document.getElementById("play-site-count");
+const playTopSitesEl = document.getElementById("play-top-sites");
+const playRecentSessionsEl = document.getElementById("play-recent-sessions");
 
 const tpTodayEl = document.getElementById("tp-today");
 const tpWeekEl = document.getElementById("tp-week");
@@ -690,6 +696,22 @@ function renderStudySessionTable(rows) {
   }
 }
 
+function renderPlaySessionTable(rows) {
+  playRecentSessionsEl.innerHTML = "";
+  if (!rows || rows.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td colspan='2'>No play sessions for this period.</td>";
+    playRecentSessionsEl.appendChild(tr);
+    return;
+  }
+
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${row.durationText}</td><td>${row.uniqueSites}</td>`;
+    playRecentSessionsEl.appendChild(tr);
+  }
+}
+
 function renderStudyMode(studyMode, studyStatus) {
   const data = studyMode || {};
   studyStatusCardEl.textContent = studyStatus?.active
@@ -709,6 +731,22 @@ function renderStudyMode(studyMode, studyStatus) {
   renderSimpleList(studyDistractionsEl, data.distractingSites || [], (row) => `${row.domain} - ${row.durationText}`);
   renderSimpleList(studyDoomscrollSurfacesEl, data.doomscrollSurfaces || [], (row) => `${row.label} - ${row.durationText}`);
   renderStudySessionTable(data.recentSessions || []);
+}
+
+function renderPlayMode(playMode, playStatus) {
+  const data = playMode || {};
+  playStatusCardEl.textContent = playStatus?.active
+    ? `On${playStatus.currentDomain ? ` on ${playStatus.currentDomain}` : ""}`
+    : "Off";
+  playTotalTimeEl.textContent = data.totalPlayTimeText || "0s";
+  playSessionCountEl.textContent = String(data.totalSessions || 0);
+  playSiteCountEl.textContent = String(data.totalUniqueSites || 0);
+
+  renderSimpleList(playTopSitesEl, data.topPlaySites || [], (row) => {
+    const visitsText = row.visits === 1 ? "1 visit" : `${row.visits} visits`;
+    return `${row.domain} - ${row.durationText} (${visitsText})`;
+  });
+  renderPlaySessionTable(data.recentSessions || []);
 }
 
 function renderFragmentation(fragmentation) {
@@ -939,6 +977,7 @@ async function loadStats(options = {}) {
     renderHonestyWidget(data.honesty);
     renderInsights(data.insights);
     renderStudyMode(data.studyMode, data.studyStatus);
+    renderPlayMode(data.playMode, data.playStatus);
     renderFragmentation(data.fragmentation);
     renderThoughtPause(data.thoughtPause);
     renderLoopPromptPanel(data.loopPrompts);

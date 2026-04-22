@@ -325,12 +325,24 @@
     return false;
   }
 
-  function lacksCognitiveDepth(value) {
+  function getWordCount(value) {
+    const words = String(value || "")
+      .trim()
+      .match(/\b[a-z0-9']+\b/gi);
+    return words ? words.length : 0;
+  }
+
+  function failsJustificationQualityCheck(value) {
     const text = String(value || "").trim();
     if (!text) {
       return false;
     }
-    return calculateEntropy(text) < 2.5 || hasWordRepeatedMoreThanTwice(text);
+
+    return (
+      calculateEntropy(text) <= 2.8 ||
+      getWordCount(text) <= 3 ||
+      hasWordRepeatedMoreThanTwice(text)
+    );
   }
 
   function looksLikeMash(value) {
@@ -517,9 +529,10 @@
     const noteError = document.createElement("p");
     noteError.className = "tp-error";
     noteError.hidden = true;
-    noteError.textContent = "Justification lacks cognitive depth. Try being honest.";
-    const slowModeSeconds = Math.max(0, Number(payload.slowModeSeconds) || 0);
-    let slowModeDone = slowModeSeconds <= 0;
+    noteError.textContent = "Justification too repetitive. Use a real sentence.";
+    const throttleMode = Boolean(payload.throttleMode);
+    const throttleSeconds = throttleMode ? Math.max(0, Number(payload.throttleSeconds) || 10) : 0;
+    let slowModeDone = throttleSeconds <= 0;
 
     const suppressModalTextareaShortcuts = (event) => {
       event.stopPropagation();
@@ -566,12 +579,13 @@
     function syncContinueState() {
       const value = note.value.trim();
       const canContinue =
-        slowModeDone && value.length >= 15 && !hasLowHonestyPattern(value) && !lacksCognitiveDepth(value);
+        slowModeDone &&
+        value.length >= 15 &&
+        !hasLowHonestyPattern(value) &&
+        !failsJustificationQualityCheck(value);
       continueBtn.disabled = !canContinue;
       continueBtn.classList.toggle("tp-btn-ready", canContinue);
-      if (noteError.hidden === false && !hasLowHonestyPattern(value) && !lacksCognitiveDepth(value)) {
-        noteError.hidden = true;
-      }
+      noteError.hidden = canContinue || value.length === 0;
     }
 
     function finish(result) {
@@ -592,12 +606,11 @@
         return;
       }
 
-      if (hasLowHonestyPattern(value) || lacksCognitiveDepth(value)) {
+      if (hasLowHonestyPattern(value) || failsJustificationQualityCheck(value)) {
         noteError.hidden = false;
         if (looksLikeMash(value)) {
           sendBackgroundMessage({ type: "SHOW_HONESTY_ALERT" }, 800).catch(() => {});
         }
-        window.alert("Justification lacks cognitive depth. Try being honest.");
         syncContinueState();
         return;
       }
@@ -655,7 +668,7 @@
     modal.appendChild(title);
     modal.appendChild(subtitle);
     modal.appendChild(reason);
-    if (slowModeSeconds > 0) {
+    if (throttleSeconds > 0) {
       const slowModeWrap = document.createElement("div");
       slowModeWrap.className = "tp-slow-mode";
       const slowModeText = document.createElement("p");
@@ -665,9 +678,9 @@
       const slowModeBarFill = document.createElement("div");
       slowModeBarFill.className = "tp-slow-mode-bar-fill";
       slowModeBar.appendChild(slowModeBarFill);
-      let remaining = slowModeSeconds;
+      let remaining = throttleSeconds;
       slowModeText.textContent =
-        "Rahul, your Brain CPU is overheating from context switches. Wait 10 seconds to stabilize focus.";
+        "Rahul, your brain is context-switching too fast. Stabilizing focus for 10 seconds...";
       slowModeWrap.appendChild(slowModeText);
       slowModeWrap.appendChild(slowModeBar);
       modal.appendChild(slowModeWrap);
@@ -679,7 +692,7 @@
 
       const slowTimer = setInterval(() => {
         remaining -= 1;
-        const progress = ((slowModeSeconds - remaining) / slowModeSeconds) * 100;
+        const progress = ((throttleSeconds - remaining) / throttleSeconds) * 100;
         slowModeBarFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
         if (remaining <= 0) {
           clearInterval(slowTimer);
