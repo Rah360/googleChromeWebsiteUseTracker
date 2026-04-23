@@ -8,9 +8,13 @@ const playMetaEl = document.getElementById("play-meta");
 const togglePlayModeBtn = document.getElementById("toggle-play-mode");
 const markDistractingBtn = document.getElementById("mark-distracting");
 const markDistractingStatusEl = document.getElementById("mark-distracting-status");
+const urgeLogEl = document.getElementById("urgeLog");
+const saveUrgeBtn = document.getElementById("saveUrge");
 const openDashboardBtn = document.getElementById("open-dashboard");
 const openSettingsBtn = document.getElementById("open-settings");
 let currentActiveTab = { domain: null, url: null };
+let currentMode = "neutral";
+let saveUrgeResetTimer = null;
 
 function sendMessage(message) {
   return new Promise((resolve, reject) => {
@@ -102,16 +106,21 @@ async function loadStatus() {
     trackingStatusEl.textContent = data.tracking ? "Tracking is active." : "Tracking is paused.";
     activeDomainEl.textContent = `Current site: ${data.domain || "-"}`;
     currentActiveTab = data.activeTab || { domain: null, url: null };
+    currentMode = data.studyMode?.active ? "study" : data.playMode?.active ? "play" : "neutral";
     renderStudyMode(data.studyMode);
     renderPlayMode(data.playMode, data.playQuota);
     markDistractingBtn.disabled = !currentActiveTab.domain;
     setMarkDistractingStatus("");
+    if ((data.studyMode?.active || data.focusUrgeLog) && urgeLogEl) {
+      requestAnimationFrame(() => urgeLogEl.focus());
+    }
   } catch {
     trackingStatusEl.textContent = "Tracking status unavailable.";
     activeDomainEl.textContent = "Current site: -";
     renderStudyMode({ active: false });
     renderPlayMode({ active: false }, { remainingText: "0s", exhausted: false, message: null });
     currentActiveTab = { domain: null, url: null };
+    currentMode = "neutral";
     markDistractingBtn.disabled = true;
   }
 }
@@ -167,6 +176,36 @@ markDistractingBtn.addEventListener("click", async () => {
     setMarkDistractingStatus(`Saved ${data.domain} as distracting.`);
   } catch (error) {
     setMarkDistractingStatus(error.message || "Unable to save.", true);
+  }
+});
+
+saveUrgeBtn.addEventListener("click", async () => {
+  const value = String(urgeLogEl.value || "").trim();
+  if (!value) {
+    urgeLogEl.focus();
+    return;
+  }
+
+  try {
+    saveUrgeBtn.disabled = true;
+    await sendMessage({
+      type: "SAVE_IMPULSE_EVENT",
+      payload: {
+        text: value,
+        mode: currentMode,
+      },
+    });
+    urgeLogEl.value = "";
+    saveUrgeBtn.textContent = "Logged. Now back to work.";
+    if (saveUrgeResetTimer) {
+      clearTimeout(saveUrgeResetTimer);
+    }
+    saveUrgeResetTimer = setTimeout(() => {
+      saveUrgeBtn.textContent = "Log & Drop";
+      saveUrgeBtn.disabled = false;
+    }, 2000);
+  } catch {
+    saveUrgeBtn.disabled = false;
   }
 });
 

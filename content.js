@@ -339,7 +339,7 @@
     }
 
     return (
-      calculateEntropy(text) <= 2.8 ||
+      calculateEntropy(text) < 2.5 ||
       getWordCount(text) <= 3 ||
       hasWordRepeatedMoreThanTwice(text)
     );
@@ -529,7 +529,7 @@
     const noteError = document.createElement("p");
     noteError.className = "tp-error";
     noteError.hidden = true;
-    noteError.textContent = "Justification too repetitive. Use a real sentence.";
+    noteError.textContent = "Justification lacks cognitive depth.";
     const throttleMode = Boolean(payload.throttleMode);
     const throttleSeconds = throttleMode ? Math.max(0, Number(payload.throttleSeconds) || 10) : 0;
     let slowModeDone = throttleSeconds <= 0;

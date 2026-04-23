@@ -1,11 +1,12 @@
 const DB_NAME = "websiteUseTracker";
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 const SESSION_STORE = "sessions";
 const THOUGHT_PAUSE_STORE = "thought_pauses";
 const TAB_EVENT_STORE = "tab_events";
 const LOOP_PROMPT_STORE = "loop_prompts";
 const STUDY_SESSION_STORE = "study_sessions";
 const PLAY_SESSION_STORE = "play_sessions";
+const IMPULSE_EVENT_STORE = "impulse_events";
 const STUDY_DEBUG_EVENT_STORE = "study_debug_events";
 const STACCATO_BURST_STORE = "staccato_bursts";
 const REPORT_LOG_STORE = "system_reports";
@@ -21,6 +22,7 @@ const STUDY_MODE_KEY = "studyModeState";
 const PLAY_MODE_KEY = "playModeState";
 const PLAY_TIME_REMAINING_KEY = "playTimeRemaining";
 const PLAY_QUOTA_RESET_AT_KEY = "playQuotaResetAt";
+const IMPULSE_POPUP_FOCUS_KEY = "focusUrgeLogOnPopupOpen";
 const STUDY_SETTINGS_KEY = "studyModeSettings";
 const ACTIVITY_STATE_KEY = "activityState";
 const BASELINE_STATE_KEY = "baselineObservationState";
@@ -179,6 +181,7 @@ const REQUIRED_DB_STORES = [
   LOOP_PROMPT_STORE,
   STUDY_SESSION_STORE,
   PLAY_SESSION_STORE,
+  IMPULSE_EVENT_STORE,
   STUDY_DEBUG_EVENT_STORE,
   STACCATO_BURST_STORE,
   REPORT_LOG_STORE,
@@ -292,6 +295,16 @@ function openDb() {
         playStore.createIndex("startTime", "startTime", { unique: false });
         playStore.createIndex("dateKey", "dateKey", { unique: false });
         playStore.createIndex("endTime", "endTime", { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(IMPULSE_EVENT_STORE)) {
+        const impulseStore = db.createObjectStore(IMPULSE_EVENT_STORE, {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        impulseStore.createIndex("timestamp", "timestamp", { unique: false });
+        impulseStore.createIndex("dateKey", "dateKey", { unique: false });
+        impulseStore.createIndex("mode", "mode", { unique: false });
       }
 
       if (!db.objectStoreNames.contains(STUDY_DEBUG_EVENT_STORE)) {
@@ -440,6 +453,69 @@ async function addThoughtPause(entry) {
   );
 }
 
+function calculateEntropy(value) {
+  const text = String(value || "");
+  if (!text) {
+    return 0;
+  }
+
+  const counts = new Map();
+  for (const char of text) {
+    counts.set(char, (counts.get(char) || 0) + 1);
+  }
+
+  let entropy = 0;
+  for (const count of counts.values()) {
+    const probability = count / text.length;
+    entropy -= probability * Math.log2(probability);
+  }
+
+  return Number(entropy.toFixed(2));
+}
+
+function hasWordRepeatedMoreThanTwice(value) {
+  const words = String(value || "")
+    .toLowerCase()
+    .match(/\b[a-z0-9']+\b/gi);
+  if (!words) {
+    return false;
+  }
+
+  const counts = new Map();
+  for (const word of words) {
+    const next = (counts.get(word) || 0) + 1;
+    counts.set(word, next);
+    if (next > 2) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getWordCount(value) {
+  const words = String(value || "")
+    .trim()
+    .match(/\b[a-z0-9']+\b/gi);
+  return words ? words.length : 0;
+}
+
+function isSpamLikeJustification(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return false;
+  }
+
+  const compact = text.replace(/\s+/g, "");
+  return (
+    calculateEntropy(text) < 2.5 ||
+    getWordCount(text) <= 3 ||
+    hasWordRepeatedMoreThanTwice(text) ||
+    (/^(?:[a-z0-9]{1,3}){3,}$/i.test(compact) && !/[aeiou]/i.test(compact)) ||
+    /^([a-z0-9]{1,3})\1{2,}$/i.test(compact)
+  );
+}
+
 function addTabEvent(entry) {
   const enriched = {
     ...entry,
@@ -496,6 +572,22 @@ function addPlaySession(entry) {
     late_night_usage: isLateNightUsage(entry.startTime, entry.endTime || entry.startTime),
   };
   return getStore(PLAY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.add(enriched);
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function addImpulseEvent(entry) {
+  const enriched = {
+    ...entry,
+    dateKey: getDayKeyFromMs(entry.timestamp),
+    late_night_usage: isLateNightUsage(entry.timestamp),
+  };
+  return getStore(IMPULSE_EVENT_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.add(enriched);
@@ -604,6 +696,17 @@ function clearAllStudySessions() {
 
 function clearAllPlaySessions() {
   return getStore(PLAY_SESSION_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const request = store.clear();
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function clearAllImpulseEvents() {
+  return getStore(IMPULSE_EVENT_STORE, "readwrite").then(
     (store) =>
       new Promise((resolve, reject) => {
         const request = store.clear();
@@ -789,6 +892,29 @@ function deletePlaySessionsInRange(startMs, endMs) {
   );
 }
 
+function deleteImpulseEventsInRange(startMs, endMs) {
+  return getStore(IMPULSE_EVENT_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
 function deleteStudyDebugEventsInRange(startMs, endMs) {
   return getStore(STUDY_DEBUG_EVENT_STORE, "readwrite").then(
     (store) =>
@@ -933,6 +1059,19 @@ function getPlaySessionsInRange(startMs, endMs) {
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
+        const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
+        const request = index.getAll(keyRange);
+        request.onsuccess = () => resolve(request.result || []);
+        request.onerror = () => reject(request.error);
+      })
+  );
+}
+
+function getImpulseEventsInRange(startMs, endMs) {
+  return getStore(IMPULSE_EVENT_STORE, "readonly").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
         const keyRange = IDBKeyRange.bound(startMs, endMs, false, true);
         const request = index.getAll(keyRange);
         request.onsuccess = () => resolve(request.result || []);
@@ -1168,6 +1307,29 @@ function deletePlaySessionsOlderThan(cutoffMs) {
     (store) =>
       new Promise((resolve, reject) => {
         const index = store.index("startTime");
+        const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
+        const cursorRequest = index.openCursor(keyRange);
+
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            resolve();
+            return;
+          }
+          cursor.delete();
+          cursor.continue();
+        };
+
+        cursorRequest.onerror = () => reject(cursorRequest.error);
+      })
+  );
+}
+
+function deleteImpulseEventsOlderThan(cutoffMs) {
+  return getStore(IMPULSE_EVENT_STORE, "readwrite").then(
+    (store) =>
+      new Promise((resolve, reject) => {
+        const index = store.index("timestamp");
         const keyRange = IDBKeyRange.upperBound(cutoffMs, true);
         const cursorRequest = index.openCursor(keyRange);
 
@@ -1734,6 +1896,17 @@ async function getPlayQuotaState(now = Date.now()) {
     exhausted: remainingMs <= 0,
     message: remainingMs <= 0 ? PLAY_LOCK_MESSAGE : null,
   };
+}
+
+async function setImpulsePopupFocusRequest(shouldFocus) {
+  await chrome.storage.local.set({ [IMPULSE_POPUP_FOCUS_KEY]: Boolean(shouldFocus) });
+}
+
+async function consumeImpulsePopupFocusRequest() {
+  const data = await chrome.storage.local.get(IMPULSE_POPUP_FOCUS_KEY);
+  const shouldFocus = Boolean(data[IMPULSE_POPUP_FOCUS_KEY]);
+  await chrome.storage.local.remove(IMPULSE_POPUP_FOCUS_KEY);
+  return shouldFocus;
 }
 
 async function setPlayQuotaState(remainingMs, resetAt) {
@@ -3933,6 +4106,7 @@ async function pruneOldSessions() {
   await deleteLoopPromptsOlderThan(cutoffMs);
   await deleteStudySessionsOlderThan(cutoffMs);
   await deletePlaySessionsOlderThan(cutoffMs);
+  await deleteImpulseEventsOlderThan(cutoffMs);
   await deleteStudyDebugEventsOlderThan(cutoffMs);
   await deleteStaccatoBurstsOlderThan(cutoffMs);
   await deleteReportLogsOlderThan(cutoffMs);
@@ -4449,6 +4623,65 @@ function getPlayModeAnalytics(sessions, activeState = null, bounds = null) {
     totalUniqueSites: siteMap.size,
     topPlaySites,
     recentSessions: recentSessions.slice(0, 5),
+  };
+}
+
+function getResilienceAnalysis(impulseEvents, sessions) {
+  const hourly = Array.from({ length: 24 }, (_, hour) => ({
+    hour,
+    urges: 0,
+    distractions: 0,
+  }));
+  const blacklistedDomains = new Set([...DEFAULT_DISTRACTION_DOMAINS, ...DOPAMINE_DOMAINS]);
+  let totalUrges = 0;
+  let totalDistractions = 0;
+
+  for (const event of impulseEvents || []) {
+    const timestamp = Math.max(0, Number(event?.timestamp) || 0);
+    if (!timestamp) {
+      continue;
+    }
+    const hour = new Date(timestamp).getHours();
+    if (hour < 0 || hour > 23) {
+      continue;
+    }
+    hourly[hour].urges += 1;
+    totalUrges += 1;
+  }
+
+  for (const session of sessions || []) {
+    const domain = normalizeDomain(session?.url) || session?.domain || null;
+    if (!domain || !domainMatchesList(domain, [...blacklistedDomains])) {
+      continue;
+    }
+
+    const timestamp = Math.max(0, Number(session?.startTime) || 0);
+    if (!timestamp) {
+      continue;
+    }
+    const hour = new Date(timestamp).getHours();
+    if (hour < 0 || hour > 23) {
+      continue;
+    }
+    hourly[hour].distractions += 1;
+    totalDistractions += 1;
+  }
+
+  const denominator = totalUrges + totalDistractions;
+  const score = denominator > 0 ? Math.round((totalUrges / denominator) * 100) : 0;
+  const badge =
+    score > 80
+      ? { label: "System Stable", tone: "stable" }
+      : score < 20
+        ? { label: "High Impulse Volatility", tone: "warning" }
+        : { label: "Impulse Monitoring", tone: "monitoring" };
+
+  return {
+    totalUrges,
+    totalDistractions,
+    score,
+    badge,
+    hourly,
   };
 }
 
@@ -5236,15 +5469,108 @@ function getStudyDebugEventsForExport(events) {
     }));
 }
 
+function getJustificationHistoryForExport(pauses) {
+  return (pauses || [])
+    .filter((pause) => typeof pause.note === "string" && pause.note.trim().length > 0)
+    .sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0))
+    .map((pause) => {
+      const note = pause.note.trim();
+      return {
+        timestamp: Number(pause.timestamp) || 0,
+        domain: pause.domain || "unknown",
+        trigger_type: pause.triggerType || null,
+        action: pause.action || null,
+        choice: pause.choice || null,
+        justification: note,
+        entropy_score: calculateEntropy(note),
+        flagged_as_spam: isSpamLikeJustification(note),
+        word_count: getWordCount(note),
+        is_repetitive: pause.is_repetitive === true,
+        repetitive_bypass: pause.repetitive_bypass === true,
+      };
+    });
+}
+
+function getDailyModeAudit(bounds, studySessions, playSessions) {
+  const buckets = new Map();
+  const ensureBucket = (timestamp) => {
+    const dateKey = getDayKeyFromMs(timestamp);
+    if (!buckets.has(dateKey)) {
+      buckets.set(dateKey, {
+        date: dateKey,
+        play_mode_time_ms: 0,
+        study_mode_time_ms: 0,
+      });
+    }
+    return buckets.get(dateKey);
+  };
+
+  for (const session of playSessions || []) {
+    const bucket = ensureBucket(Number(session.startTime) || bounds.start);
+    bucket.play_mode_time_ms += Math.max(0, Number(session.activePlayTimeMs) || 0);
+  }
+
+  for (const session of studySessions || []) {
+    const bucket = ensureBucket(Number(session.startTime) || bounds.start);
+    bucket.study_mode_time_ms += Math.max(0, Number(session.activeStudyTimeMs) || 0);
+  }
+
+  const rows = [];
+  for (
+    let dayMs = new Date(bounds.start).setHours(0, 0, 0, 0);
+    dayMs < bounds.end;
+    dayMs += 24 * 60 * 60 * 1000
+  ) {
+    const dateKey = getDayKeyFromMs(dayMs);
+    const bucket = buckets.get(dateKey) || {
+      date: dateKey,
+      play_mode_time_ms: 0,
+      study_mode_time_ms: 0,
+    };
+    rows.push({
+      ...bucket,
+      play_mode_time_text: formatDuration(bucket.play_mode_time_ms),
+      study_mode_time_text: formatDuration(bucket.study_mode_time_ms),
+    });
+  }
+
+  return rows;
+}
+
+function getLoopPairsForExport(behavioral) {
+  return (behavioral?.topBouncePairs || []).map((pair) => ({
+    from: pair.from,
+    to: pair.to,
+    pair: `${pair.from} -> ${pair.to}`,
+    count: Number(pair.count) || 0,
+    average_gap_ms: Number(pair.averageGapMs) || 0,
+    average_gap_text: pair.averageGapText || "0s",
+    highlight: pair.highlight === true,
+  }));
+}
+
 async function getAiExportData() {
   const bounds = getLastSevenDaysBounds();
-  const [sessions, thoughtPauses, loopPrompts, studySessions, studyDebugEvents] = await Promise.all([
+  const fullHistoryEnd = Date.now() + 1;
+  const [sessions, thoughtPauses, loopPrompts, studySessions, playSessions, impulseEvents, studyDebugEvents, behavioral, allThoughtPauses, allPlaySessions, allStudySessions, allImpulseEvents] = await Promise.all([
     getSessionsInRange(bounds.start, bounds.end),
     getThoughtPausesInRange(bounds.start, bounds.end),
     getLoopPromptsInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
+    getPlaySessionsInRange(bounds.start, bounds.end),
+    getImpulseEventsInRange(bounds.start, bounds.end),
     getStudyDebugEventsInRange(bounds.start, bounds.end),
+    getBehavioralAnalytics("weekly", 5),
+    getThoughtPausesInRange(0, fullHistoryEnd),
+    getPlaySessionsInRange(0, fullHistoryEnd),
+    getStudySessionsInRange(0, fullHistoryEnd),
+    getImpulseEventsInRange(0, fullHistoryEnd),
   ]);
+  const justificationHistory = getJustificationHistoryForExport(allThoughtPauses);
+  const resilienceAnalysis = getResilienceAnalysis(impulseEvents, sessions);
+  const interruptionCount = (Number(resilienceAnalysis.totalUrges) || 0) + (Number(resilienceAnalysis.totalDistractions) || 0);
+  const selfControlIndex =
+    interruptionCount > 0 ? Math.round(((Number(resilienceAnalysis.totalUrges) || 0) / interruptionCount) * 100) : 0;
 
   return {
     system_persona: "User: Senior Dev, Tech: Java/Go/Scala, Goal: Deep Work.",
@@ -5254,9 +5580,29 @@ async function getAiExportData() {
       end: bounds.end,
       days: 7,
     },
+    metadata: {
+      export_timestamp_iso: new Date().toISOString(),
+      self_control_index: selfControlIndex,
+      success_urges: Number(resilienceAnalysis.totalUrges) || 0,
+      total_interruptions: interruptionCount,
+    },
     daily_fragmentation_scores: getDailyFragmentationScoresForExport(sessions, bounds.start, bounds.end),
     top_loop_pairs: getTopLoopPairsForExport(loopPrompts),
+    loop_pairs: getLoopPairsForExport(behavioral),
     pause_justifications: getPauseJustificationsForExport(thoughtPauses, sessions),
+    resilience_logs: (allImpulseEvents || [])
+      .sort((a, b) => (Number(a.timestamp) || 0) - (Number(b.timestamp) || 0))
+      .map((item) => ({
+        timestamp: Number(item.timestamp) || 0,
+        text: item.text || "",
+        mode: item.mode || "neutral",
+      })),
+    justification_history: justificationHistory,
+    play_mode_audit: getDailyModeAudit(
+      { start: Math.min(...[...allPlaySessions, ...allStudySessions].map((item) => Number(item.startTime) || fullHistoryEnd), fullHistoryEnd), end: fullHistoryEnd },
+      allStudySessions,
+      allPlaySessions
+    ),
     justification_efficacy: getPauseJustificationsForExport(thoughtPauses, sessions).map((item) => ({
       timestamp: item.timestamp,
       domain: item.domain,
@@ -5522,6 +5868,7 @@ async function getStats(period) {
     pauses,
     studySessions,
     playSessions,
+    impulseEvents,
     activeStudyState,
     activePlayState,
     studySettings,
@@ -5533,6 +5880,7 @@ async function getStats(period) {
     getThoughtPausesInRange(bounds.start, bounds.end),
     getStudySessionsInRange(bounds.start, bounds.end),
     getPlaySessionsInRange(bounds.start, bounds.end),
+    getImpulseEventsInRange(bounds.start, bounds.end),
     getStudyModeState(),
     getPlayModeState(),
     getStudySettings(),
@@ -5563,6 +5911,7 @@ async function getStats(period) {
   const loopPrompts = await getLoopPromptSummary();
   const studyMode = getStudyModeAnalytics(studySessions, activeStudyState, bounds, studySettings);
   const playMode = getPlayModeAnalytics(playSessions, activePlayState, bounds);
+  const resilience = getResilienceAnalysis(impulseEvents, sessions);
   const fragmentation = getFragmentationMetrics(sessions, behavioral, studyMode);
   const thoughtPause = {
     ...getThoughtPauseAnalytics(pauses, sessions),
@@ -5622,6 +5971,7 @@ async function getStats(period) {
     studyStatus,
     playMode,
     playStatus,
+    resilience,
     fragmentation,
     systemHealth,
     controlMeter,
@@ -5640,6 +5990,7 @@ async function clearData(period) {
     await clearAllLoopPrompts();
     await clearAllStudySessions();
     await clearAllPlaySessions();
+    await clearAllImpulseEvents();
     await clearAllStudyDebugEvents();
     await clearAllStaccatoBursts();
     await clearAllReportLogs();
@@ -5664,6 +6015,7 @@ async function clearData(period) {
   await deleteLoopPromptsInRange(bounds.start, bounds.end);
   await deleteStudySessionsInRange(bounds.start, bounds.end);
   await deletePlaySessionsInRange(bounds.start, bounds.end);
+  await deleteImpulseEventsInRange(bounds.start, bounds.end);
   await deleteStudyDebugEventsInRange(bounds.start, bounds.end);
   await deleteStaccatoBurstsInRange(bounds.start, bounds.end);
   await deleteReportLogsInRange(bounds.start, bounds.end);
@@ -5756,6 +6108,19 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   clearDeepDiveTimer(tabId);
+});
+
+chrome.commands.onCommand.addListener(async (command) => {
+  if (command !== "open-impulse-logger") {
+    return;
+  }
+
+  await setImpulsePopupFocusRequest(true);
+  try {
+    await chrome.action.openPopup();
+  } catch (error) {
+    console.warn("Unable to open popup from command", error);
+  }
 });
 
 chrome.windows.onFocusChanged.addListener(async (windowId) => {
@@ -5860,8 +6225,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       getPlayModeState(),
       getCurrentActiveTab(),
       getPlayQuotaState(),
+      consumeImpulsePopupFocusRequest(),
     ])
-      .then(([active, studyMode, studySettings, playMode, tab, playQuota]) =>
+      .then(([active, studyMode, studySettings, playMode, tab, playQuota, focusUrgeLog]) =>
         sendResponse({
           ok: true,
           data: {
@@ -5894,6 +6260,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                   session: null,
                 },
             playQuota,
+            focusUrgeLog,
             activeTab: {
               domain: normalizeDomain(tab?.url) || null,
               url: tab?.url || null,
@@ -5937,6 +6304,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     getCurrentActiveTab()
       .then((tab) => addCurrentSiteToDistractingList(tab?.url || null))
       .then((data) => sendResponse({ ok: true, data }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message.type === "SAVE_IMPULSE_EVENT") {
+    const payload = message.payload || {};
+    const text = String(payload.text || "").trim().slice(0, 500);
+    const allowedMode = payload.mode === "study" || payload.mode === "play" ? payload.mode : "neutral";
+    if (!text) {
+      sendResponse({ ok: false, error: "Impulse text is required." });
+      return true;
+    }
+
+    addImpulseEvent({
+      timestamp: Date.now(),
+      text,
+      mode: allowedMode,
+    })
+      .then(() => sendResponse({ ok: true, data: { saved: true } }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }

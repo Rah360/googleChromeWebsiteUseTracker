@@ -1,5 +1,6 @@
 const periodSelect = document.getElementById("period");
 const copyAiExportBtn = document.getElementById("copy-ai-export");
+const downloadFullAuditBtn = document.getElementById("download-full-audit");
 const baselineRemainingEl = document.getElementById("baseline-remaining");
 const totalTimeEl = document.getElementById("total-time");
 const uniqueSitesEl = document.getElementById("unique-sites");
@@ -39,6 +40,12 @@ const playSessionCountEl = document.getElementById("play-session-count");
 const playSiteCountEl = document.getElementById("play-site-count");
 const playTopSitesEl = document.getElementById("play-top-sites");
 const playRecentSessionsEl = document.getElementById("play-recent-sessions");
+const resilienceBadgeEl = document.getElementById("resilience-badge");
+const resilienceScoreEl = document.getElementById("resilience-score");
+const resilienceUrgesEl = document.getElementById("resilience-urges");
+const resilienceDistractionsEl = document.getElementById("resilience-distractions");
+const resilienceChartEl = document.getElementById("resilience-chart");
+const resilienceLegendEl = document.getElementById("resilience-legend");
 
 const tpTodayEl = document.getElementById("tp-today");
 const tpWeekEl = document.getElementById("tp-week");
@@ -144,6 +151,25 @@ async function exportDataForAI() {
     throw new Error("Clipboard API unavailable");
   }
   await navigator.clipboard.writeText(json);
+  return data;
+}
+
+async function downloadFullBehavioralAudit() {
+  const data = await sendMessage({ type: "GET_AI_EXPORT" });
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[:]/g, "-")
+    .replace(/\.\d{3}Z$/, "Z");
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `behavioral-audit-${timestamp}.json`;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
   return data;
 }
 
@@ -749,6 +775,110 @@ function renderPlayMode(playMode, playStatus) {
   renderPlaySessionTable(data.recentSessions || []);
 }
 
+function renderResilienceLegend() {
+  if (!resilienceLegendEl) {
+    return;
+  }
+  resilienceLegendEl.innerHTML = "";
+
+  [
+    { label: "Urges Logged", color: "#60a5fa" },
+    { label: "Distraction Visits", color: "#ef4444" },
+  ].forEach((item) => {
+    const wrap = document.createElement("div");
+    wrap.className = "legend-item";
+    const color = document.createElement("span");
+    color.className = "legend-color";
+    color.style.background = item.color;
+    const text = document.createElement("span");
+    text.textContent = item.label;
+    wrap.appendChild(color);
+    wrap.appendChild(text);
+    resilienceLegendEl.appendChild(wrap);
+  });
+}
+
+function renderResilienceChart(rows = []) {
+  if (!resilienceChartEl) {
+    return;
+  }
+
+  resilienceChartEl.innerHTML = "";
+  if (!rows.length) {
+    return;
+  }
+
+  const width = 720;
+  const height = 240;
+  const padding = { top: 18, right: 16, bottom: 34, left: 28 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const maxCount = Math.max(1, ...rows.flatMap((row) => [Number(row.urges) || 0, Number(row.distractions) || 0]));
+  const groupWidth = plotWidth / rows.length;
+  const barWidth = Math.max(4, (groupWidth - 4) / 2);
+
+  const baseline = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  baseline.setAttribute("x1", String(padding.left));
+  baseline.setAttribute("y1", String(height - padding.bottom));
+  baseline.setAttribute("x2", String(width - padding.right));
+  baseline.setAttribute("y2", String(height - padding.bottom));
+  baseline.setAttribute("stroke", "#4b5563");
+  baseline.setAttribute("stroke-width", "1");
+  resilienceChartEl.appendChild(baseline);
+
+  rows.forEach((row, index) => {
+    const urges = Math.max(0, Number(row.urges) || 0);
+    const distractions = Math.max(0, Number(row.distractions) || 0);
+    const baseX = padding.left + index * groupWidth + 2;
+
+    [
+      { value: urges, color: "#60a5fa", x: baseX },
+      { value: distractions, color: "#ef4444", x: baseX + barWidth + 2 },
+    ].forEach((series) => {
+      const barHeight = (series.value / maxCount) * plotHeight;
+      const y = height - padding.bottom - barHeight;
+      const bar = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bar.setAttribute("x", String(series.x));
+      bar.setAttribute("y", String(y));
+      bar.setAttribute("width", String(barWidth));
+      bar.setAttribute("height", String(barHeight));
+      bar.setAttribute("rx", "2");
+      bar.setAttribute("fill", series.color);
+      bar.setAttribute(
+        "title",
+        `${String(row.hour).padStart(2, "0")}:00 • Urges ${urges} • Distractions ${distractions}`
+      );
+      resilienceChartEl.appendChild(bar);
+    });
+
+    if (index % 2 === 0) {
+      const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+      label.setAttribute("x", String(baseX + barWidth - 4));
+      label.setAttribute("y", String(height - 10));
+      label.setAttribute("font-size", "9");
+      label.setAttribute("fill", "#94a3b8");
+      label.textContent = String(row.hour).padStart(2, "0");
+      resilienceChartEl.appendChild(label);
+    }
+  });
+}
+
+function renderResilience(resilience) {
+  const data = resilience || {};
+  const badge = data.badge || { label: "Impulse Monitoring", tone: "monitoring" };
+  resilienceScoreEl.textContent = `${Number(data.score) || 0}%`;
+  resilienceUrgesEl.textContent = String(data.totalUrges || 0);
+  resilienceDistractionsEl.textContent = String(data.totalDistractions || 0);
+
+  if (resilienceBadgeEl) {
+    resilienceBadgeEl.textContent = badge.label || "Impulse Monitoring";
+    resilienceBadgeEl.className = `resilience-badge resilience-${badge.tone || "monitoring"}`;
+  }
+
+  renderResilienceChart(data.hourly || []);
+  renderResilienceLegend();
+}
+
 function renderFragmentation(fragmentation) {
   const data = fragmentation || {};
   fragmentCountEl.textContent = String(data.fragmentCount || 0);
@@ -978,6 +1108,7 @@ async function loadStats(options = {}) {
     renderInsights(data.insights);
     renderStudyMode(data.studyMode, data.studyStatus);
     renderPlayMode(data.playMode, data.playStatus);
+    renderResilience(data.resilience);
     renderFragmentation(data.fragmentation);
     renderThoughtPause(data.thoughtPause);
     renderLoopPromptPanel(data.loopPrompts);
@@ -1332,6 +1463,22 @@ if (copyAiExportBtn) {
       setStatus(error.message, true);
       setCopyButtonTemporaryState("❌ Copy Failed", "error-state");
       showToast("❌ Copy Failed. Check DevTools.", true);
+    }
+  });
+}
+
+if (downloadFullAuditBtn) {
+  downloadFullAuditBtn.addEventListener("click", async (event) => {
+    event.preventDefault();
+    try {
+      setStatus("Preparing behavioral audit...");
+      await downloadFullBehavioralAudit();
+      setStatus("Behavioral audit downloaded.");
+      showToast("Behavioral audit saved.");
+    } catch (error) {
+      console.error("Download Full Behavioral Audit failed", error);
+      setStatus(error.message, true);
+      showToast("Behavioral audit download failed.", true);
     }
   });
 }

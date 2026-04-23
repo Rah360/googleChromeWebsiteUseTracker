@@ -38,6 +38,30 @@ p {
   font-size: 0.76rem;
 }
 
+.section-title {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 68px;
+  resize: vertical;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+}
+
+textarea:focus {
+  outline: 2px solid #0f766e;
+  outline-offset: 1px;
+  border-color: #0f766e;
+}
+
 button {
   margin-top: 6px;
   width: 100%;

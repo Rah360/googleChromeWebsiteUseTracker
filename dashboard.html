@@ -18,6 +18,7 @@
           <option value="monthly">Monthly</option>
         </select>
         <button id="copy-ai-export" type="button">Copy Data for AI Analysis</button>
+        <button id="download-full-audit" type="button">Download Full Behavioral Audit</button>
         <div class="baseline-chip">
           <span class="metric-label">Baseline</span>
           <strong id="baseline-remaining">7 days remaining</strong>
@@ -271,6 +272,35 @@
             </thead>
             <tbody id="play-recent-sessions"></tbody>
           </table>
+        </article>
+      </section>
+
+      <section class="study-mode-panel">
+        <div class="resilience-header">
+          <h2>Resilience Analysis</h2>
+          <span id="resilience-badge" class="resilience-badge resilience-monitoring">Impulse Monitoring</span>
+        </div>
+        <p class="chart-help">
+          Blue bars are urges you logged before acting. Red bars are visits to distraction domains. The score is calculated as Urges / (Urges + Distractions) for the selected period.
+        </p>
+        <div class="thought-cards">
+          <article class="card">
+            <h3>Resilience Score</h3>
+            <p id="resilience-score">0%</p>
+          </article>
+          <article class="card">
+            <h3>Urges Logged</h3>
+            <p id="resilience-urges">0</p>
+          </article>
+          <article class="card">
+            <h3>Distraction Visits</h3>
+            <p id="resilience-distractions">0</p>
+          </article>
+        </div>
+        <article class="top-sites">
+          <h3>Urges vs Distractions by Hour</h3>
+          <svg id="resilience-chart" class="chart-svg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
+          <div id="resilience-legend" class="legend"></div>
         </article>
       </section>
 

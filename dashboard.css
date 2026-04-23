@@ -73,7 +73,8 @@ button {
   pointer-events: auto;
 }
 
-#copy-ai-export {
+#copy-ai-export,
+#download-full-audit {
   min-height: 38px;
   white-space: nowrap;
 }
@@ -326,6 +327,43 @@ button {
 
 .study-mode-panel {
   margin-top: 12px;
+}
+
+.resilience-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.resilience-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  border: 1px solid #14532d;
+}
+
+.resilience-stable {
+  color: #bbf7d0;
+  background: rgba(20, 83, 45, 0.4);
+  border-color: #16a34a;
+}
+
+.resilience-warning {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.35);
+  border-color: #dc2626;
+}
+
+.resilience-monitoring {
+  color: #fde68a;
+  background: rgba(120, 53, 15, 0.35);
+  border-color: #d97706;
 }
 
 .behavioral {

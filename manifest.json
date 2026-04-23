@@ -42,5 +42,14 @@
   "action": {
     "default_title": "Website Use Tracker",
     "default_popup": "popup.html"
+  },
+  "commands": {
+    "open-impulse-logger": {
+      "suggested_key": {
+        "default": "Alt+L",
+        "mac": "Command+Shift+L"
+      },
+      "description": "Open the popup and focus the impulse logger"
+    }
   }
 }
